@@ -1235,7 +1235,13 @@ def eval_val(
 
     val_loss = val_loss_sum / val_token_count
     bits_per_token = val_loss.item() / math.log(2.0)
-    tokens_per_byte = val_token_count.item() / val_byte_count.item()
+    print(
+    "eval:",
+    "tokens=", val_token_count.item(),
+    "bytes=", val_byte_count.item(),
+    )
+    tokens_per_byte = (val_token_count.item() / val_byte_count.item() if val_byte_count.item() > 0 
+                       else float("nan"))
     model.train()
     return float(val_loss.item()), float(bits_per_token * tokens_per_byte)
 
@@ -7446,42 +7452,64 @@ class ClusterSelfAttention16(nn.Module):
         # --------------------------------------------------
         # Intra-cluster variance diagnostics
         # --------------------------------------------------
+        if self.training:
 
-        diff = k_shared_cluster - centroids_k.unsqueeze(2)  # (B,N,S,Dh)
+            diff = k_shared_cluster - centroids_k.unsqueeze(2)  # (B,N,S,Dh)
 
-        sq_dist = (diff * diff).sum(dim=-1)                 # (B,N,S)
+            sq_dist = (diff * diff).sum(dim=-1)                 # (B,N,S)
 
-        sq_dist = sq_dist * cluster_valid
+            sq_dist = sq_dist * cluster_valid
 
-        cluster_var = (
-            sq_dist.sum(dim=2)
-            / cluster_valid.sum(dim=2).clamp_min(1)
-        )                                                   # (B,N)
+            cluster_var = (sq_dist.sum(dim=2) / cluster_valid.sum(dim=2).clamp_min(1))                                                   # (B,N)
 
-        token_norm = F.normalize(k_shared_cluster.float(), dim=-1)
-        centroid_norm = F.normalize(centroids_k.float(), dim=-1).unsqueeze(2)
-        token_centroid_sim = (token_norm * centroid_norm).sum(dim=-1)
-        valid_sim = token_centroid_sim[cluster_valid]
-        self._token_centroid_sim_mean = valid_sim.mean().item()
-        self._token_centroid_sim_std  = valid_sim.std().item()
-        self._token_centroid_sim_min  = valid_sim.min().item()
+            token_norm = F.normalize(k_shared_cluster.float(), dim=-1)
+            centroid_norm = F.normalize(centroids_k.float(), dim=-1).unsqueeze(2)
+            token_centroid_sim = (token_norm * centroid_norm).sum(dim=-1)
+            valid_sim = token_centroid_sim[cluster_valid]
 
-        self._last_cluster_var = cluster_var.detach().cpu()
-        self._last_k_shared = k_shared.detach().cpu()
-        self._cluster_var_avg = cluster_var.mean().item()
-        self._cluster_var_max = cluster_var.max().item()
-        self._cluster_var_min = cluster_var.min().item()
+            valid_sim = token_centroid_sim[cluster_valid]
 
-        # ===================================================
+            if valid_sim.numel() == 0:
+                self._token_centroid_sim_mean = float("nan")
+                self._token_centroid_sim_std  = float("nan")
+                self._token_centroid_sim_min  = float("nan")
+                self._token_centroid_sim_max  = float("nan")
+            elif valid_sim.numel() == 1:
+                v = valid_sim.item()
+                self._token_centroid_sim_mean = v
+                self._token_centroid_sim_std  = 0.0
+                self._token_centroid_sim_min  = v
+                self._token_centroid_sim_max  = v
+            else:
+                self._token_centroid_sim_mean = valid_sim.mean().item()
+                self._token_centroid_sim_std  = valid_sim.std().item()
+                self._token_centroid_sim_min  = valid_sim.min().item()
+                self._token_centroid_sim_max  = valid_sim.max().item()
+                
+
+            self._last_cluster_var = cluster_var.detach().cpu()
+            self._last_k_shared = k_shared.detach().cpu()
+            self._cluster_var_avg = cluster_var.mean().item()
+            self._cluster_var_max = cluster_var.max().item()
+            self._cluster_var_min = cluster_var.min().item()
+
+            # ===================================================
+
+            
+            cluster_min_pos = cluster_idx.masked_fill(~cluster_valid, T).min(dim=2).values
+            cluster_active  = cluster_valid.any(dim=2)  # (B,N)
+
+
+            # Cache centroids (only k)
+            self._last_centroids_k    = centroids_k.detach().cpu()
+            self._last_cluster_min_pos = cluster_min_pos.detach().cpu()
+            self._last_cluster_active  = cluster_active.detach().cpu()
+            self._last_seq_len         = T
 
         cluster_min_pos = cluster_idx.masked_fill(~cluster_valid, T).min(dim=2).values
         cluster_active  = cluster_valid.any(dim=2)  # (B,N)
 
-        # Cache centroids (only k)
-        self._last_centroids_k    = centroids_k.detach().cpu()
-        self._last_cluster_min_pos = cluster_min_pos.detach().cpu()
-        self._last_cluster_active  = cluster_active.detach().cpu()
-        self._last_seq_len         = T
+
 
         # ── Build K_star / V_star ─────────────────────────────────────
         if N > 1:
@@ -7665,7 +7693,7 @@ class Block(nn.Module):
         super().__init__()
         self.attn_norm = RMSNorm()
         self.mlp_norm = RMSNorm()
-        self.attn = ClusterSelfAttention16(dim, num_heads, num_kv_heads, rope_base, qk_gain_init)
+        self.attn = CausalSelfAttention(dim, num_heads, num_kv_heads, rope_base, qk_gain_init)
         self.mlp = MLP(dim, mlp_mult)
         self.attn_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
         self.mlp_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
@@ -8514,7 +8542,9 @@ def main() -> None:
         base_model_orig.eval()
         base_model.eval()
 
-        _probe = val_tokens[:1, :args.train_seq_len].to(device)
+        _probe = (val_tokens[:args.train_seq_len].unsqueeze(0).to(device).long())
+
+        _probe = _probe.long()
         with torch.no_grad():
             _logits_orig  = base_model_orig.forward_logits(_probe).float()
             _logits_quant = base_model.forward_logits(_probe).float()
@@ -8553,7 +8583,7 @@ def main() -> None:
         wandb.log(
             {
                 "final/val_loss": q_val_loss,
-                "final/val_ppl": val_ppl,
+                "final/val_ppl": math.exp(min(q_val_loss, 20)),
                 "final/val_bpb": q_val_bpb,
 
                 "quant/max_logit_diff":
