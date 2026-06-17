@@ -404,6 +404,12 @@ class CentroidQualityAnalytics:
     intra_cluster_variance_std: float = 0.0
     intra_cluster_variance_max: float = 0.0
     cluster_compactness_score: float = 0.0
+    token_centroid_similarity_mean: float = 0.0
+    token_centroid_similarity_std: float = 0.0
+    token_centroid_similarity_min: float = 0.0
+    nearest_centroid_similarity_mean: float = 0.0
+    nearest_centroid_similarity_std: float = 0.0
+    nearest_centroid_similarity_max: float = 0.0
 
 
 @dataclass
@@ -501,13 +507,21 @@ class EnhancedAtlasMetadataCollector:
         # Routing analytics
         if cluster_valid is not None and cluster_idx is not None:
             layer_analytics.routing = EnhancedAtlasMetadataCollector._compute_routing_analytics(
-                cluster_valid, cluster_idx
+                module, cluster_valid, cluster_idx
             )
         
         # Cluster distribution
-        if cluster_valid is not None:
-            layer_analytics.cluster_distribution = EnhancedAtlasMetadataCollector._compute_cluster_distribution(
-                cluster_valid
+        cluster_assignments = getattr(
+            module,
+            "_last_cluster_assignments",
+            None,
+        )
+
+        if cluster_assignments is not None:
+            layer_analytics.cluster_distribution = (
+                EnhancedAtlasMetadataCollector._compute_cluster_distribution(
+                    cluster_assignments
+                )
             )
         
         # Attention composition
@@ -519,18 +533,19 @@ class EnhancedAtlasMetadataCollector:
         # Centroid quality
         if centroids_k is not None:
             layer_analytics.centroid_quality = EnhancedAtlasMetadataCollector._compute_centroid_quality(
-                centroids_k, cluster_idx, cluster_valid
+                module, centroids_k, cluster_idx, cluster_valid
             )
         
         return layer_analytics
     
     @staticmethod
-    def _compute_routing_analytics(cluster_valid, cluster_idx) -> RoutingAnalytics:
+    def _compute_routing_analytics(module, cluster_valid, cluster_idx) -> RoutingAnalytics:
         """Compute routing statistics."""
         # cluster_valid: (B, N, S) bool
         # cluster_idx: (B, N, S) long
         
         B, N, S = cluster_valid.shape
+        T = cluster_valid.sum(dim=(1,2)).float().mean().item()
         
         # Routing similarity: cosine similarity of cluster assignments
         flat_valid = cluster_valid.reshape(B, -1).float()
@@ -546,47 +561,54 @@ class EnhancedAtlasMetadataCollector:
             entropy = 0.0
         
         # Cluster reuse rate: how often the same cluster appears
-        cluster_count = cluster_idx.max().item() + 1
+        cluster_count = (cluster_valid.any(dim=-1).sum(dim=-1).float().mean().item())
         used_clusters = torch.unique(cluster_idx[cluster_valid]).numel()
-        reuse_rate = max(0.0, 1.0 - (used_clusters / max(N, 1)))
-        
+
+        assignments = getattr(
+            module,
+            "_last_cluster_assignments",
+            None,
+        )
+
         # New cluster creation rate
-        new_cluster_rate = used_clusters / max(N, 1)
+        new_cluster_rate = cluster_count / max(T, 1)
         
+        if assignments is not None:
+            reuse_rate = 1.0 - new_cluster_rate
+        else: 
+            reuse_rate = 0.0
+
         return RoutingAnalytics(
-            routing_similarity_mean=0.0,  # Placeholder
-            routing_similarity_std=0.0,
-            routing_similarity_min=0.0,
-            routing_similarity_max=1.0,
             cluster_reuse_rate=reuse_rate,
             new_cluster_creation_rate=new_cluster_rate,
             cluster_assignment_entropy=entropy,
         )
     
     @staticmethod
-    def _compute_cluster_distribution(cluster_valid) -> ClusterDistributionAnalytics:
+    def _compute_cluster_distribution(cluster_assignments) -> ClusterDistributionAnalytics:
         """Compute cluster size distribution."""
-        # cluster_valid: (B, N, S) bool
-        cluster_sizes = cluster_valid.sum(dim=-1).reshape(-1)  # Flatten to 1D
-        cluster_sizes_valid = cluster_sizes[cluster_sizes > 0]
-        
-        if cluster_sizes_valid.numel() == 0:
+        sizes = []
+        B = cluster_assignments.size(0)
+        for b in range(B):
+            _, counts = torch.unique(
+                    cluster_assignments[b],
+                    return_counts=True
+            )
+            sizes.extend(counts.tolist())
+
+        if len(sizes) == 0:
             return ClusterDistributionAnalytics()
         
-        median = torch.median(cluster_sizes_valid.float()).item()
-        p90 = torch.quantile(cluster_sizes_valid.float(), 0.9).item()
-        p95 = torch.quantile(cluster_sizes_valid.float(), 0.95).item()
-        p99 = torch.quantile(cluster_sizes_valid.float(), 0.99).item()
-        
-        hist, _ = torch.histogram(cluster_sizes_valid.float(), bins=10)
-        
+        sizes = torch.tensor(sizes, dtype=torch.float32)
+        hist, _ = torch.histogram(sizes, bins=10)
+    
         return ClusterDistributionAnalytics(
             cluster_size_histogram=hist.tolist(),
-            cluster_count_histogram=[int(cluster_sizes_valid.numel())],
-            median_cluster_size=median,
-            p90_cluster_size=p90,
-            p95_cluster_size=p95,
-            p99_cluster_size=p99,
+            cluster_count_histogram=[len(sizes)],
+            median_cluster_size=torch.median(sizes).item(),
+            p90_cluster_size=torch.quantile(sizes, 0.90).item(),
+            p95_cluster_size=torch.quantile(sizes, 0.95).item(),
+            p99_cluster_size=torch.quantile(sizes, 0.99).item(),
         )
     
     @staticmethod
@@ -619,7 +641,7 @@ class EnhancedAtlasMetadataCollector:
         )
     
     @staticmethod
-    def _compute_centroid_quality(centroids_k, cluster_idx, cluster_valid) -> CentroidQualityAnalytics:
+    def _compute_centroid_quality(module, centroids_k, cluster_idx, cluster_valid) -> CentroidQualityAnalytics:
         """Compute centroid quality metrics."""
         # centroids_k: (B, N, Dh)
         
@@ -640,6 +662,18 @@ class EnhancedAtlasMetadataCollector:
         
         # Apply mask to all batches: gather all non-diagonal elements
         pairwise_sim_flat = pairwise_sim[:, mask].reshape(-1)  # Flatten across all batches and non-diag elements
+
+        token_centroid_mean = getattr(module,"_token_centroid_sim_mean",0.0,)
+        token_centroid_std = getattr(module,"_token_centroid_sim_std",0.0,)
+        token_centroid_min = getattr(module,"_token_centroid_sim_min",0.0,)
+
+        sim_no_diag = pairwise_sim.clone()
+        eye = torch.eye(N, device=pairwise_sim.device, dtype=torch.bool,)
+        sim_no_diag.masked_fill_(eye[None], -1.0)
+        nearest_sim = sim_no_diag.max(dim=-1).values
+        nearest_centroid_similarity_mean = nearest_sim.mean().item()
+        nearest_centroid_similarity_std = nearest_sim.std().item()
+        nearest_centroid_similarity_max = nearest_sim.max().item()
         
         if pairwise_sim_flat.numel() > 0:
             sim_mean = pairwise_sim_flat.mean().item()
@@ -649,11 +683,36 @@ class EnhancedAtlasMetadataCollector:
             sim_std = 0.0
         
         # Intra-cluster variance (from module cache if available)
-        intra_var_mean = 0.0
-        intra_var_std = 0.0
-        intra_var_max = 0.0
-        compactness = 0.0
-        
+                
+        cluster_var = getattr(
+            module,
+            "_last_cluster_var",
+            None,
+        )
+
+        if cluster_var is not None:
+
+            valid = cluster_var[torch.isfinite(cluster_var)]
+
+            if valid.numel() > 0:
+
+                intra_var_mean = valid.mean().item()
+                intra_var_std = valid.std().item()
+                intra_var_max = valid.max().item()
+
+                compactness = (1.0 / (1.0 + intra_var_mean))
+
+            else:
+                intra_var_mean = 0.0
+                intra_var_std = 0.0
+                intra_var_max = 0.0
+                compactness = 0.0
+        else:
+            intra_var_mean = 0.0
+            intra_var_std = 0.0
+            intra_var_max = 0.0
+            compactness = 0.0
+
         return CentroidQualityAnalytics(
             centroid_norm_mean=centroid_norm_mean,
             centroid_norm_std=centroid_norm_std,
@@ -663,6 +722,13 @@ class EnhancedAtlasMetadataCollector:
             intra_cluster_variance_std=intra_var_std,
             intra_cluster_variance_max=intra_var_max,
             cluster_compactness_score=compactness,
+
+            token_centroid_similarity_mean = token_centroid_mean,
+            token_centroid_similarity_std = token_centroid_std,
+            token_centroid_similarity_min = token_centroid_min,
+            nearest_centroid_similarity_mean=nearest_centroid_similarity_mean,
+            nearest_centroid_similarity_std=nearest_centroid_similarity_std,
+            nearest_centroid_similarity_max=nearest_centroid_similarity_max,
         )    
 
     @staticmethod
@@ -7233,6 +7299,11 @@ class ClusterSelfAttention16(nn.Module):
         total_cluster_size = 0
         total_cluster_count = 0
         max_cluster_count = 0
+        ownership = torch.empty(
+            (B, T),
+            device=device,
+            dtype=torch.long,
+        )
 
         for b in range(B):
             k_norm_b = k_norm[b]  # (T, Dh) — stays on GPU
@@ -7287,6 +7358,7 @@ class ClusterSelfAttention16(nn.Module):
                 n = cluster.numel()
                 cluster_idx[b, cluster_count_b, :n] = cluster
                 cluster_valid[b, cluster_count_b, :n] = True
+                ownership[b, cluster] = cluster_count_b
                 total_cluster_size += n
                 total_cluster_count += 1
                 cluster_count_b += 1
@@ -7296,6 +7368,7 @@ class ClusterSelfAttention16(nn.Module):
         N = max_cluster_count
         cluster_idx = cluster_idx[:, :N]
         cluster_valid = cluster_valid[:, :N]
+        self._last_cluster_assignments = ownership.detach().cpu()
 
         self.last_cluster_count = (float(total_cluster_count) / max(B, 1))
         self.last_avg_cluster_size = (float(total_cluster_size) / max(total_cluster_count, 1))
@@ -7385,6 +7458,16 @@ class ClusterSelfAttention16(nn.Module):
             / cluster_valid.sum(dim=2).clamp_min(1)
         )                                                   # (B,N)
 
+        token_norm = F.normalize(k_shared_cluster.float(), dim=-1)
+        centroid_norm = F.normalize(centroids_k.float(), dim=-1).unsqueeze(2)
+        token_centroid_sim = (token_norm * centroid_norm).sum(dim=-1)
+        valid_sim = token_centroid_sim[cluster_valid]
+        self._token_centroid_sim_mean = valid_sim.mean().item()
+        self._token_centroid_sim_std  = valid_sim.std().item()
+        self._token_centroid_sim_min  = valid_sim.min().item()
+
+        self._last_cluster_var = cluster_var.detach().cpu()
+        self._last_k_shared = k_shared.detach().cpu()
         self._cluster_var_avg = cluster_var.mean().item()
         self._cluster_var_max = cluster_var.max().item()
         self._cluster_var_min = cluster_var.min().item()
@@ -7744,12 +7827,8 @@ def main() -> None:
     master_process = rank == 0
 
 
-    if master_process:
-        os.makedirs("outputs/checkpoints", exist_ok=True)
-        os.makedirs("outputs/atlas_metadata", exist_ok=True)
-        os.makedirs("outputs/research", exist_ok=True)
-        if wandb is not None: 
-            wandb.init(
+    if master_process and wandb is not None: 
+        wandb.init(
                 project=args.wandb_project,
                 entity=args.wandb_entity,
                 name=args.run_id,
@@ -7842,6 +7921,13 @@ def main() -> None:
         rope_base=args.rope_base,
         qk_gain_init=args.qk_gain_init,
     ).to(device).bfloat16()
+    if isinstance(base_model.blocks[0].attn, CausalSelfAttention):
+        experiment_name = "dense"
+    else:
+        experiment_name = "atlas"
+    os.makedirs(f"outputs/{experiment_name}/checkpoints", exist_ok=True)
+    os.makedirs(f"outputs/{experiment_name}/atlas_metadata", exist_ok=True)
+    os.makedirs(f"outputs/{experiment_name}/research", exist_ok=True)
     for module in base_model.modules():
         if isinstance(module, CastedLinear):
             module.float()
@@ -7930,7 +8016,7 @@ def main() -> None:
     # CHECKPOINT MANAGER + ANALYTICS SETUP
     # ============================================================================
     ckpt_manager = CheckpointManager(
-        checkpoint_dir = "outputs/checkpoints",
+        checkpoint_dir = f"outputs/{experiment_name}/checkpoints",
         keep_last_k    = 3,
         rank           = rank,
         distributed    = distributed,
@@ -7940,8 +8026,11 @@ def main() -> None:
         save_full_attention_masks = False,
         full_mask_every           = 10,
     )
+    atlas_collector.METADATA_DIR = Path(
+    f"outputs/{experiment_name}/atlas_metadata")
+    atlas_collector.METADATA_DIR.mkdir(parents=True, exist_ok=True)
     performance_tracker = PerformanceTracker(window_size=50)
-    research_exporter = ResearchExporter(output_dir="outputs/research")
+    research_exporter = ResearchExporter(output_dir=f"outputs/{experiment_name}/research")
 
     # Initialize checkpoint state with enhanced fields
     ckpt_state = CheckpointState()
