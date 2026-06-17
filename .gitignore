@@ -11,3 +11,4 @@ data/docs_selected.jsonl
 logs/
 pyrightconfig.json
 wandb/
+final_model.pt
