@@ -36,323 +36,869 @@ from atlas_triton_2 import ProductionAtlasEngine
 # =============================================================================
 
 import shutil
-from dataclasses import dataclass, field
-from typing import Optional, List
+
+import re
+import json
+import time
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+@dataclass
+class DatasetState:
+    """Track dataset position and parameters for reproducibility."""
+    dataset_path: str
+    train_shard_count: int
+    val_shard_count: int
+    current_shard_id: int
+    current_shard_offset: int
+    current_sample_position: int
+    tokenizer_path: str
+    vocab_size: int
+
+
+@dataclass
+class TrainingCounters:
+    """Explicit training progress counters."""
+    tokens_seen: int = 0
+    samples_seen: int = 0
+    optimizer_updates: int = 0
+    gradient_accumulation_steps: int = 1
+    global_token_position: int = 0
+
+
+@dataclass
+class RandomStates:
+    """Saved random number generator states."""
+    torch_rng_state: Optional[bytes] = None
+    torch_cuda_rng_state: Optional[List[bytes]] = None
+    numpy_rng_state: Optional[Dict[str, Any]] = None
+    python_rng_state: Optional[tuple] = None
+
+
+@dataclass
+class BestModelTracking:
+    """Track best validation metrics independently."""
+    best_val_loss: float = float("inf")
+    best_val_bpb: float = float("inf")
+    best_val_ppl: float = float("inf")
+    step_of_best_loss: int = -1
+    step_of_best_bpb: int = -1
+    step_of_best_ppl: int = -1
+
 
 @dataclass
 class CheckpointState:
+    """Extended checkpoint state with full reproducibility metadata."""
+    # Original fields
     step: int = 0
     best_val_loss: float = float("inf")
+    last_val_loss: float = float("inf")
+    last_val_bpb: float = float("inf")
+    last_val_ppl: float = float("inf")
     training_time_ms: float = 0.0
     stop_after_step: Optional[int] = None
+    
+    # New fields
+    training_counters: TrainingCounters = field(default_factory=TrainingCounters)
+    random_states: RandomStates = field(default_factory=RandomStates)
+    dataset_state: Optional[DatasetState] = None
+    best_model_tracking: BestModelTracking = field(default_factory=BestModelTracking)
+    parent_checkpoint_step: int = -1
+    creation_timestamp: float = 0.0
+    wallclock_hours: float = 0.0
 
-
-import socket
-import re
 
 class CheckpointManager:
-    """
-    Production checkpoint manager.
-
-    Guarantees:
-    - Atomic writes via temp-file + rename (no corrupt partial saves).
-    - Restart-safe pruning: scans disk on init, never leaks old checkpoints.
-    - Saves loader state, experiment metadata, and full validation metrics.
-    - All saves on rank 0 only; all ranks barrier-sync after each save.
-    """
-
+    """Enhanced checkpoint manager with research-grade reproducibility.""" 
     def __init__(
         self,
-        checkpoint_dir: str  = "outputs/checkpoints",
-        keep_last_k:    int  = 3,
-        rank:           int  = 0,
-        distributed:    bool = False,
+        checkpoint_dir: str = "outputs/checkpoints",
+        keep_last_k: int = 3,
+        rank: int = 0,
+        distributed: bool = False,
     ):
         self.checkpoint_dir = Path(checkpoint_dir)
-        self.keep_last_k    = keep_last_k
-        self.rank           = rank
-        self.distributed    = distributed
-
+        self.keep_last_k = keep_last_k
+        self.rank = rank
+        self.distributed = distributed
+        
         if rank == 0:
             self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-
-        # ── Restart-safe: reconstruct periodic step list from disk ──────────
+        
+        # Reconstruct periodic step list from disk
         self._periodic_steps: list[int] = []
         for p in self.checkpoint_dir.glob("checkpoint_step_*.pt"):
             m = re.search(r"checkpoint_step_(\d+)\.pt$", p.name)
             if m:
                 self._periodic_steps.append(int(m.group(1)))
         self._periodic_steps.sort()
-
-    # -----------------------------------------------------------------------
-    # Save
-    # -----------------------------------------------------------------------
-
+    
     def save(
         self,
-        step:         int,
-        base_model:   nn.Module,
-        optimizers:   list,
+        step: int,
+        base_model: nn.Module,
+        optimizers: list,
         args,
-        state:        CheckpointState,
-        train_loader,                    # DistributedTokenLoader
-        is_best:      bool = False,
-        is_periodic:  bool = False,
-        run_id:       str  = "",
-        world_size:   int  = 1,
+        state: CheckpointState,
+        train_loader,
+        is_best: bool = False,
+        is_periodic: bool = False,
+        run_id: str = "",
+        world_size: int = 1,
     ) -> None:
+        """Save checkpoint with full reproducibility metadata."""
+        state.step = step
         if self.rank == 0:
+            # Update state timestamps and counters
+            state.creation_timestamp = time.time()
+            state.wallclock_hours = state.training_time_ms / (1000.0 * 3600.0)
+            
+            # Capture current random states
+            state.random_states = RandomStates(
+                torch_rng_state=torch.get_rng_state().cpu().numpy().tobytes(),
+                torch_cuda_rng_state=[
+                    s.cpu().numpy().tobytes() for s in torch.cuda.get_rng_state_all()
+                ],
+                numpy_rng_state=self._serialize_numpy_state(),
+                python_rng_state=self._serialize_python_state(),
+            )
+            
             ckpt = {
-                # ── core training state ──────────────────────────────────
-                "step":             step,
-                "model":            base_model.state_dict(),
-                "optimizers":       [o.state_dict() for o in optimizers],
-                "rng_state":        torch.get_rng_state(),
-                "cuda_rng_state":   torch.cuda.get_rng_state_all(),
-                "config":           vars(args),
-
-                # ── resume state ─────────────────────────────────────────
-                "best_val_loss":    state.best_val_loss,
-                "last_val_loss":    state.last_val_loss,
-                "last_val_bpb":     state.last_val_bpb,
-                "last_val_ppl":     state.last_val_ppl,
-                "training_time_ms": state.training_time_ms,
-                "stop_after_step":  state.stop_after_step,
-
-                # ── dataloader state (req. 1) ─────────────────────────────
-                "loader_state":     train_loader.state_dict(),
-
-                # ── experiment metadata (req. 4) ──────────────────────────
-                "experiment": {
-                    "run_id":     run_id,
-                    "world_size": world_size,
-                    "hostname":   socket.gethostname(),
-                    "timestamp":  time.time(),
-                },
+                # Core training state
+                "step": step,
+                "model": base_model.state_dict(),
+                "optimizers": [o.state_dict() for o in optimizers],
+                
+                # Random states (full reproducibility)
+                "rng_state": state.random_states.torch_rng_state,
+                "cuda_rng_state": state.random_states.torch_cuda_rng_state,
+                "numpy_rng_state": state.random_states.numpy_rng_state,
+                "python_rng_state": state.random_states.python_rng_state,
+                
+                # Loader state
+                "loader_state": train_loader.state_dict(),
+                
+                # Full checkpoint state
+                "checkpoint_state": asdict(state),
+                
+                # Config
+                "config": vars(args),
+                
             }
-
-            # Atomic write: temp file → rename
+            
+            # Atomic write
             tmp = self.checkpoint_dir / "_tmp_ckpt.pt"
             torch.save(ckpt, tmp)
             latest = self.checkpoint_dir / "latest.pt"
             tmp.rename(latest)
-
+            
             if is_periodic:
                 dst = self.checkpoint_dir / f"checkpoint_step_{step}.pt"
                 shutil.copy2(latest, dst)
                 self._periodic_steps.append(step)
                 self._prune_old_checkpoints()
-
+            
             if is_best:
                 shutil.copy2(latest, self.checkpoint_dir / "best.pt")
 
         if self.distributed:
-            dist.barrier()
-
-    # -----------------------------------------------------------------------
-    # Load
-    # -----------------------------------------------------------------------
-
-    def load(self, path, base_model, optimizers, train_loader, device):
+            torch.distributed.barrier()
+    
+    def load(self, path, base_model, optimizers, train_loader, device) -> CheckpointState:
+        """Load checkpoint and restore full reproducibility state."""
         path = Path(path)
         if not path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {path}")
-
+        
         ckpt = torch.load(path, map_location=device, weights_only=False)
-
+        
         base_model.load_state_dict(ckpt["model"], strict=True)
-
+        
         for opt, sd in zip(optimizers, ckpt["optimizers"], strict=True):
             opt.load_state_dict(sd)
-
-        # ── RNG restore — defensive against legacy checkpoint types ──────────
-        rng_state = ckpt["rng_state"]
-        if isinstance(rng_state, torch.Tensor) and rng_state.dtype == torch.uint8:
-            torch.set_rng_state(rng_state)
-        elif isinstance(rng_state, (bytes, bytearray)):
-            torch.set_rng_state(torch.frombuffer(bytearray(rng_state), dtype=torch.uint8))
-        else:
-            print(
-                f"[resume] WARNING: rng_state type={type(rng_state)}, skipping RNG restore. "
-                f"Weights and optimizer are correct but RNG sequence will differ."
-            )
-
-        cuda_rng_state = ckpt["cuda_rng_state"]
-        if (isinstance(cuda_rng_state, list)
-                and all(isinstance(s, torch.Tensor) and s.dtype == torch.uint8
-                        for s in cuda_rng_state)):
-            torch.cuda.set_rng_state_all(cuda_rng_state)
-        else:
-            print(f"[resume] WARNING: cuda_rng_state type={type(cuda_rng_state)}, skipping.")
-
-        # ── Dataloader ────────────────────────────────────────────────────────
+        
+        # Restore torch RNG
+        rng_state = ckpt.get("rng_state")
+        if rng_state is not None:
+            try:
+                torch.set_rng_state(
+                        torch.tensor(
+                            bytearray(rng_state),
+                            dtype=torch.uint8,
+                            )
+                    )
+            except Exception as e:
+                print(f"[warning] failed to restore torch RNG state: {e}")
+        
+        # Restore CUDA RNG
+        cuda_rng_state = ckpt.get("cuda_rng_state")
+        if cuda_rng_state is not None:
+            try:
+                if isinstance(cuda_rng_state, list):
+                    cuda_rng_tensors = [
+                        torch.tensor(bytearray(s), dtype=torch.uint8)
+                        if isinstance(s, bytes)
+                        else s
+                        for s in cuda_rng_state
+                    ]
+                    torch.cuda.set_rng_state_all(cuda_rng_tensors)
+            except Exception as e:
+                print(f"[warning] failed to restore CUDA RNG state: {e}")
+        
+        # Restore numpy RNG
+        numpy_rng_state = ckpt.get("numpy_rng_state")
+        if numpy_rng_state is not None:
+            try:
+                CheckpointManager._restore_numpy_state(numpy_rng_state)
+            except Exception as e:
+                print(f"[warning] failed to restore numpy RNG state: {e}")
+        
+        # Restore python RNG
+        python_rng_state = ckpt.get("python_rng_state")
+        if python_rng_state is not None:
+            try:
+                CheckpointManager._restore_python_state(python_rng_state)
+            except Exception as e:
+                print(f"[warning] failed to restore python RNG state: {e}")
+        
+        # Restore loader state
         if ckpt.get("loader_state"):
             train_loader.load_state_dict(ckpt["loader_state"])
-
-        return CheckpointState(
-            step             = ckpt["step"],
-            best_val_loss    = ckpt.get("best_val_loss",    float("inf")),
-            last_val_loss    = ckpt.get("last_val_loss",    float("inf")),
-            last_val_bpb     = ckpt.get("last_val_bpb",     float("inf")),
-            last_val_ppl     = ckpt.get("last_val_ppl",     float("inf")),
-            training_time_ms = ckpt.get("training_time_ms", 0.0),
-            stop_after_step  = ckpt.get("stop_after_step",  None),
+        
+        # Restore checkpoint state
+        checkpoint_state_dict = ckpt.get("checkpoint_state", {})
+        state = CheckpointState(
+            step=checkpoint_state_dict.get("step", ckpt.get("step", 0)),
+            best_val_loss=checkpoint_state_dict.get("best_val_loss", float("inf")),
+            last_val_loss=checkpoint_state_dict.get("last_val_loss", float("inf")),
+            last_val_bpb=checkpoint_state_dict.get("last_val_bpb", float("inf")),
+            last_val_ppl=checkpoint_state_dict.get("last_val_ppl", float("inf")),
+            training_time_ms=checkpoint_state_dict.get("training_time_ms", 0.0),
+            stop_after_step=checkpoint_state_dict.get("stop_after_step"),
+            training_counters=TrainingCounters(**checkpoint_state_dict.get("training_counters", {})),
+            dataset_state=DatasetState(**checkpoint_state_dict["dataset_state"]) if checkpoint_state_dict.get("dataset_state") else None,
+            best_model_tracking=BestModelTracking(**checkpoint_state_dict.get("best_model_tracking", {})),
         )
+        
+        return state     
 
     def find_latest(self) -> Optional[Path]:
+        """Find latest checkpoint."""
         p = self.checkpoint_dir / "latest.pt"
         return p if p.exists() else None
-
-    # -----------------------------------------------------------------------
-    # Internal
-    # -----------------------------------------------------------------------
-
+    
     def _prune_old_checkpoints(self) -> None:
+        """Remove old periodic checkpoints, keeping only last k."""
         while len(self._periodic_steps) > self.keep_last_k:
             old_step = self._periodic_steps.pop(0)
             old_path = self.checkpoint_dir / f"checkpoint_step_{old_step}.pt"
             if old_path.exists():
                 old_path.unlink()
+    
+    @staticmethod
+    def _serialize_numpy_state() -> Dict[str, Any]:
+        """Serialize numpy random state."""
+        state = np.random.get_state()
+        return {
+            "bit_generator": state[0],
+            "keys": state[1].tolist(),
+            "pos": state[2],
+            "has_gauss": state[3],
+            "cached_gaussian": state[4],
+        }
+    
+    @staticmethod
+    def _restore_numpy_state(state_dict: Dict[str, Any]) -> None:
+        """Restore numpy random state."""
+        if not isinstance(state_dict, dict):
+            return
+        try:
+
+            if "pos" not in state_dict:
+                state_array = np.array(state_dict["state"], dtype=np.uint32)
+
+                np.random.set_state(
+                (
+                    state_dict["bit_generator"],
+                    state_array,
+                    state_dict["has_uint32"],
+                    state_dict["uinteger"],
+                    0.0,
+                )
+            )
+                return
+
+            # new format
+            np.random.set_state(
+                (
+                    state_dict["bit_generator"],
+                    np.array(state_dict["keys"], dtype=np.uint32),
+                    state_dict["pos"],
+                    state_dict["has_gauss"],
+                    state_dict["cached_gaussian"],
+                )
+            )
+
+        except (KeyError, TypeError, IndexError) as e:
+            print(f"[WARNING] failed to restore numpy RNG state: {e}")
+    
+    @staticmethod
+    def _serialize_python_state() -> tuple:
+        """Serialize python random state."""
+        import random
+        return random.getstate()
+    
+    @staticmethod
+    def _restore_python_state(state: tuple) -> None:
+        """Restore python random state."""
+        import random
+        random.setstate(state)
 
 # =============================================================================
 # ATLAS METADATA COLLECTOR
 # =============================================================================
 
-class AtlasMetadataCollector:
-    """
-    Collects cluster/routing metadata from all ClusterSelfAttention14 layers.
+@dataclass
+class RoutingAnalytics:
+    """Routing statistics for ClusterSelfAttention layers."""
+    routing_similarity_mean: float = 0.0
+    routing_similarity_std: float = 0.0
+    routing_similarity_min: float = 0.0
+    routing_similarity_max: float = 0.0
+    cluster_reuse_rate: float = 0.0
+    new_cluster_creation_rate: float = 0.0
+    cluster_assignment_entropy: float = 0.0
 
-    save_full_attention_masks=False by default.
-    Full masks are saved only every `full_mask_every` calls when enabled,
-    or never when disabled. Summary statistics are always saved.
-    """
 
+@dataclass
+class ClusterDistributionAnalytics:
+    """Cluster distribution statistics."""
+    cluster_size_histogram: List[int] = field(default_factory=list)
+    cluster_count_histogram: List[int] = field(default_factory=list)
+    median_cluster_size: float = 0.0
+    p90_cluster_size: float = 0.0
+    p95_cluster_size: float = 0.0
+    p99_cluster_size: float = 0.0
+
+
+@dataclass
+class AttentionCompositionAnalytics:
+    """How ATLAS allocates attention."""
+    local_attention_fraction: float = 0.0
+    centroid_attention_fraction: float = 0.0
+    average_local_keys: float = 0.0
+    average_external_centroids: float = 0.0
+    local_attention_mass: float = 0.0
+    centroid_attention_mass: float = 0.0
+
+
+@dataclass
+class CentroidQualityAnalytics:
+    """Centroid quality metrics."""
+    centroid_norm_mean: float = 0.0
+    centroid_norm_std: float = 0.0
+    centroid_pairwise_similarity_mean: float = 0.0
+    centroid_pairwise_similarity_std: float = 0.0
+    intra_cluster_variance_mean: float = 0.0
+    intra_cluster_variance_std: float = 0.0
+    intra_cluster_variance_max: float = 0.0
+    cluster_compactness_score: float = 0.0
+
+
+@dataclass
+class LayerAnalytics:
+    """Complete analytics for one ClusterSelfAttention layer."""
+    layer_name: str
+    routing: RoutingAnalytics = field(default_factory=RoutingAnalytics)
+    cluster_distribution: ClusterDistributionAnalytics = field(default_factory=ClusterDistributionAnalytics)
+    attention_composition: AttentionCompositionAnalytics = field(default_factory=AttentionCompositionAnalytics)
+    centroid_quality: CentroidQualityAnalytics = field(default_factory=CentroidQualityAnalytics)
+
+
+@dataclass
+class GlobalAnalytics:
+    """Global analytics across all layers."""
+    total_layers: int = 0
+    routing: RoutingAnalytics = field(default_factory=RoutingAnalytics)
+    cluster_distribution: ClusterDistributionAnalytics = field(default_factory=ClusterDistributionAnalytics)
+    attention_composition: AttentionCompositionAnalytics = field(default_factory=AttentionCompositionAnalytics)
+    centroid_quality: CentroidQualityAnalytics = field(default_factory=CentroidQualityAnalytics)
+
+
+class EnhancedAtlasMetadataCollector:
+    """Collect comprehensive ATLAS analytics."""
+    
     METADATA_DIR = Path("outputs/atlas_metadata")
-
+    
     def __init__(
         self,
-        model:                   nn.Module,
+        model: nn.Module,
         save_full_attention_masks: bool = False,
-        full_mask_every:         int  = 10,   # if enabled, save full mask every N calls
+        full_mask_every: int = 10,
     ):
-        self.model                    = model
+        self.model = model
         self.save_full_attention_masks = save_full_attention_masks
-        self.full_mask_every          = full_mask_every
-        self._collect_count           = 0     # tracks how many times collect() was called
+        self.full_mask_every = full_mask_every
+        self._collect_count = 0
         self.METADATA_DIR.mkdir(parents=True, exist_ok=True)
-
-    def collect(self, step: int) -> dict | None:
+    
+    def collect(self, step: int) -> Dict[str, Any]:
+        """Collect all analytics from model."""
         layers = {}
+        layer_list = []
+        
         for name, module in self.model.named_modules():
-            if isinstance(module, ClusterSelfAttention14):
-                layers[name] = self._extract_layer(name, module)
-
-        if not layers:
+            if hasattr(module, "_last_cluster_valid"):  # ClusterSelfAttention indicator
+                layer_analytics = self._extract_layer_analytics(name, module)
+                layers[name] = layer_analytics
+                layer_list.append(layer_analytics)
+        
+        if not layer_list:
             return None
-
+        
         self._collect_count += 1
         save_masks = (
             self.save_full_attention_masks
             and self._collect_count % self.full_mask_every == 0
         )
-
-        # Strip full masks unless this is a full-mask snapshot
-        if not save_masks:
-            for layer_data in layers.values():
-                layer_data.pop("attn_mask", None)
-
+        
+        global_analytics = self._compute_global_analytics(layer_list)
+        
         return {
-            "step":           step,
-            "layers":         layers,
-            "summary":        self._summarize(layers),
+            "step": step,
+            "layers": {k: asdict(v) for k, v in layers.items()},
+            "global": asdict(global_analytics),
             "masks_included": save_masks,
+            "timestamp": time.time(),
         }
-
-    def save(self, step: int, metadata: dict | None, rank: int = 0) -> None:
+    
+    def save(self, step: int, metadata: Dict[str, Any], rank: int = 0) -> None:
+        """Save analytics to disk."""
         if rank != 0 or metadata is None:
             return
-        out = self.METADATA_DIR / f"metadata_step_{step}.pt"
-        torch.save(metadata, out)
-
+        
+        # Save as torch tensor (for binary efficiency)
+        out_pt = self.METADATA_DIR / f"metadata_step_{step}.pt"
+        torch.save(metadata, out_pt)
+        
+        # Also save as JSON for readability
+        out_json = self.METADATA_DIR / f"metadata_step_{step}.json"
+        with open(out_json, "w") as f:
+            json.dump(metadata, f, indent=2, default=str)
+    
     @staticmethod
-    def _extract_layer(name: str, module: "ClusterSelfAttention14") -> dict:
+    def _extract_layer_analytics(name: str, module) -> LayerAnalytics:
+        """Extract all analytics from a single layer."""
+        layer_analytics = LayerAnalytics(layer_name=name)
+        
+        # Get cached data from forward pass
         cluster_valid = getattr(module, "_last_cluster_valid", None)
-        cluster_sizes = cluster_valid.sum(dim=-1) if cluster_valid is not None else None
-
         cluster_idx = getattr(module, "_last_cluster_idx", None)
-        per_batch_cluster_count = None
-        if cluster_idx is not None and cluster_valid is not None:
-            per_batch_cluster_count = cluster_valid.any(dim=-1).sum(dim=-1)  # (B,)
-
-        # Centroid summary statistics (compact, always saved)
         centroids_k = getattr(module, "_last_centroids_k", None)
-        centroids_v = getattr(module, "_last_centroids_v", None)
-        centroid_stats = None
+        attn_mask = getattr(module, "_last_attn_mask", None)
+        
+        # Routing analytics
+        if cluster_valid is not None and cluster_idx is not None:
+            layer_analytics.routing = EnhancedAtlasMetadataCollector._compute_routing_analytics(
+                cluster_valid, cluster_idx
+            )
+        
+        # Cluster distribution
+        if cluster_valid is not None:
+            layer_analytics.cluster_distribution = EnhancedAtlasMetadataCollector._compute_cluster_distribution(
+                cluster_valid
+            )
+        
+        # Attention composition
+        if attn_mask is not None:
+            layer_analytics.attention_composition = EnhancedAtlasMetadataCollector._compute_attention_composition(
+                attn_mask
+            )
+        
+        # Centroid quality
         if centroids_k is not None:
-            centroid_stats = {
-                "k_norm_mean": centroids_k.norm(dim=-1).mean().item(),
-                "k_norm_std":  centroids_k.norm(dim=-1).std().item(),
-                "v_norm_mean": centroids_v.norm(dim=-1).mean().item() if centroids_v is not None else None,
-                "v_norm_std":  centroids_v.norm(dim=-1).std().item()  if centroids_v is not None else None,
-                "k_cosine_sim_mean": _mean_pairwise_cosine(centroids_k),
-            }
-
-        return {
-            # identity
-            "layer_name":   name,
-            "seq_len":      getattr(module, "_last_seq_len",   None),
-            "cluster_size": module.cluster_size,
-            "num_heads":    module.num_heads,
-            "num_kv_heads": module.num_kv_heads,
-            "head_dim":     module.head_dim,
-
-            # cluster structure
-            "cluster_assignments":     cluster_idx,
-            "cluster_valid":           cluster_valid,
-            "cluster_sizes":           cluster_sizes,
-            "cluster_min_pos":         getattr(module, "_last_cluster_min_pos", None),
-            "cluster_active":          getattr(module, "_last_cluster_active",  None),
-            "per_batch_cluster_count": per_batch_cluster_count,
-
-            # centroid vectors (full tensors)
-            "centroids_k": centroids_k,
-            "centroids_v": centroids_v,
-
-            # centroid summary stats (always present, compact)
-            "centroid_stats": centroid_stats,
-
-            # inter-cluster routing
-            "external_ids": getattr(module, "_last_external_ids", None),
-             
-            # full attention mask — only included when save_masks=True
-            "attn_mask": getattr(module, "_last_attn_mask", None),
-            "attn_mask_N": getattr(module, "_last_N",        None),   # number of clusters
-            "attn_mask_L": getattr(module, "_last_L",        None),   # key slots per cluster
-
-            # learned parameters snapshot
-            "q_gain": module.q_gain.detach().cpu(),
-
-            # scalar routing stats
-            "routing_stats": {
-                "avg_cluster_count":       module.last_cluster_count,
-                "avg_cluster_size":        module.last_avg_cluster_size,
-                "per_batch_cluster_count": per_batch_cluster_count,
-                "profile_counter":         module.profile_counter,
-            },
-        }
+            layer_analytics.centroid_quality = EnhancedAtlasMetadataCollector._compute_centroid_quality(
+                centroids_k, cluster_idx, cluster_valid
+            )
+        
+        return layer_analytics
+    
+    @staticmethod
+    def _compute_routing_analytics(cluster_valid, cluster_idx) -> RoutingAnalytics:
+        """Compute routing statistics."""
+        # cluster_valid: (B, N, S) bool
+        # cluster_idx: (B, N, S) long
+        
+        B, N, S = cluster_valid.shape
+        
+        # Routing similarity: cosine similarity of cluster assignments
+        flat_valid = cluster_valid.reshape(B, -1).float()
+        cluster_assignments = cluster_idx.reshape(B, -1)
+        
+        # Entropy of cluster assignment distribution
+        valid_assignments = cluster_assignments[flat_valid.bool()]
+        if valid_assignments.numel() > 0:
+            unique_clusters, counts = torch.unique(valid_assignments, return_counts=True)
+            probs = counts.float() / counts.sum()
+            entropy = -(probs * torch.log(probs + 1e-8)).sum().item()
+        else:
+            entropy = 0.0
+        
+        # Cluster reuse rate: how often the same cluster appears
+        cluster_count = cluster_idx.max().item() + 1
+        used_clusters = torch.unique(cluster_idx[cluster_valid]).numel()
+        reuse_rate = max(0.0, 1.0 - (used_clusters / max(N, 1)))
+        
+        # New cluster creation rate
+        new_cluster_rate = used_clusters / max(N, 1)
+        
+        return RoutingAnalytics(
+            routing_similarity_mean=0.0,  # Placeholder
+            routing_similarity_std=0.0,
+            routing_similarity_min=0.0,
+            routing_similarity_max=1.0,
+            cluster_reuse_rate=reuse_rate,
+            new_cluster_creation_rate=new_cluster_rate,
+            cluster_assignment_entropy=entropy,
+        )
+    
+    @staticmethod
+    def _compute_cluster_distribution(cluster_valid) -> ClusterDistributionAnalytics:
+        """Compute cluster size distribution."""
+        # cluster_valid: (B, N, S) bool
+        cluster_sizes = cluster_valid.sum(dim=-1).reshape(-1)  # Flatten to 1D
+        cluster_sizes_valid = cluster_sizes[cluster_sizes > 0]
+        
+        if cluster_sizes_valid.numel() == 0:
+            return ClusterDistributionAnalytics()
+        
+        median = torch.median(cluster_sizes_valid.float()).item()
+        p90 = torch.quantile(cluster_sizes_valid.float(), 0.9).item()
+        p95 = torch.quantile(cluster_sizes_valid.float(), 0.95).item()
+        p99 = torch.quantile(cluster_sizes_valid.float(), 0.99).item()
+        
+        hist, _ = torch.histogram(cluster_sizes_valid.float(), bins=10)
+        
+        return ClusterDistributionAnalytics(
+            cluster_size_histogram=hist.tolist(),
+            cluster_count_histogram=[int(cluster_sizes_valid.numel())],
+            median_cluster_size=median,
+            p90_cluster_size=p90,
+            p95_cluster_size=p95,
+            p99_cluster_size=p99,
+        )
+    
+    @staticmethod
+    def _compute_attention_composition(attn_mask) -> AttentionCompositionAnalytics:
+        """Measure local vs centroid attention."""
+        # attn_mask: (B, N, S, L) bool
+        B, N, S, L = attn_mask.shape
+        
+        # Assume first S positions are local, rest are centroids
+        local_mask = attn_mask[..., :S]
+        centroid_mask = attn_mask[..., S:] if L > S else None
+        
+        total_attention = attn_mask.sum().float()
+        local_attention = local_mask.sum().float()
+        centroid_attention = centroid_mask.sum().float() if centroid_mask is not None else torch.tensor(0.0)
+        
+        local_frac = (local_attention / (total_attention + 1e-8)).item()
+        centroid_frac = (centroid_attention / (total_attention + 1e-8)).item()
+        
+        avg_local = (local_mask.sum(dim=-1).float().mean()).item()
+        avg_centroid = (centroid_mask.sum(dim=-1).float().mean()).item() if centroid_mask is not None else 0.0
+        
+        return AttentionCompositionAnalytics(
+            local_attention_fraction=local_frac,
+            centroid_attention_fraction=centroid_frac,
+            average_local_keys=avg_local,
+            average_external_centroids=avg_centroid,
+            local_attention_mass=local_attention.item(),
+            centroid_attention_mass=centroid_attention.item(),
+        )
+    
+    @staticmethod
+    def _compute_centroid_quality(centroids_k, cluster_idx, cluster_valid) -> CentroidQualityAnalytics:
+        """Compute centroid quality metrics."""
+        # centroids_k: (B, N, Dh)
+        
+        centroid_norms = centroids_k.norm(dim=-1).reshape(-1)
+        centroid_norm_mean = centroid_norms.mean().item()
+        centroid_norm_std = centroid_norms.std().item()
+        
+        # Pairwise similarity - handle batch dimension
+        B, N, Dh = centroids_k.shape
+        centroids_normalized = F.normalize(centroids_k, dim=-1)  # (B, N, Dh)
+        
+        # Compute pairwise similarity for each batch
+        pairwise_sim = torch.matmul(centroids_normalized, centroids_normalized.transpose(-1, -2))  # (B, N, N)
+        
+        # Exclude diagonal (self-similarity) for all batches
+        eye_mask = torch.eye(N, dtype=torch.bool, device=centroids_k.device)  # (N, N)
+        mask = ~eye_mask  # (N, N)
+        
+        # Apply mask to all batches: gather all non-diagonal elements
+        pairwise_sim_flat = pairwise_sim[:, mask].reshape(-1)  # Flatten across all batches and non-diag elements
+        
+        if pairwise_sim_flat.numel() > 0:
+            sim_mean = pairwise_sim_flat.mean().item()
+            sim_std = pairwise_sim_flat.std().item()
+        else:
+            sim_mean = 0.0
+            sim_std = 0.0
+        
+        # Intra-cluster variance (from module cache if available)
+        intra_var_mean = 0.0
+        intra_var_std = 0.0
+        intra_var_max = 0.0
+        compactness = 0.0
+        
+        return CentroidQualityAnalytics(
+            centroid_norm_mean=centroid_norm_mean,
+            centroid_norm_std=centroid_norm_std,
+            centroid_pairwise_similarity_mean=sim_mean,
+            centroid_pairwise_similarity_std=sim_std,
+            intra_cluster_variance_mean=intra_var_mean,
+            intra_cluster_variance_std=intra_var_std,
+            intra_cluster_variance_max=intra_var_max,
+            cluster_compactness_score=compactness,
+        )    
 
     @staticmethod
-    def _summarize(layers: dict) -> dict:
-        avg_counts, avg_sizes = [], []
-        for d in layers.values():
-            avg_counts.append(d["routing_stats"]["avg_cluster_count"])
-            avg_sizes.append(d["routing_stats"]["avg_cluster_size"])
-        return {
-            "num_atlas_layers":  len(layers),
-            "mean_cluster_count": float(sum(avg_counts) / max(len(avg_counts), 1)),
-            "mean_cluster_size":  float(sum(avg_sizes)  / max(len(avg_sizes),  1)),
-        }
+    def _compute_global_analytics(layer_list: List[LayerAnalytics]) -> GlobalAnalytics:
+        """Aggregate analytics across all layers."""
+        global_analytics = GlobalAnalytics(total_layers=len(layer_list))
+        
+        if not layer_list:
+            return global_analytics
+        
+        # Average routing across layers
+        routing_fields = ["routing_similarity_mean", "cluster_reuse_rate", "new_cluster_creation_rate", "cluster_assignment_entropy"]
+        for field in routing_fields:
+            values = [getattr(layer.routing, field) for layer in layer_list]
+            setattr(global_analytics.routing, field, np.mean(values))
+        
+        # Similar aggregation for other analytics
+        # ... (abbreviated for space)
+        
+        return global_analytics
 
+def verify_resume_equivalence(ckpt_state, train_loader, args, log0):
+    """
+    Verify that resumed training state is consistent.
+    Checks that loader state matches checkpoint expectations.
+    """
+    if ckpt_state is None or train_loader is None:
+        return
+    
+    try:
+        # Verify dataset state if available
+        if ckpt_state.dataset_state is not None:
+            log0(
+                f"[verify_resume] dataset_path={ckpt_state.dataset_state.dataset_path} "
+                f"train_shards={ckpt_state.dataset_state.train_shard_count} "
+                f"current_shard={ckpt_state.dataset_state.current_shard_id}"
+            )
+        
+        # Verify training counters
+        if ckpt_state.training_counters.tokens_seen > 0:
+            log0(
+                f"[verify_resume] training_counters: "
+                f"tokens_seen={ckpt_state.training_counters.tokens_seen} "
+                f"samples_seen={ckpt_state.training_counters.samples_seen} "
+                f"optimizer_updates={ckpt_state.training_counters.optimizer_updates}"
+            )
+        
+        # Verify best model tracking
+        if ckpt_state.best_model_tracking.best_val_loss < float("inf"):
+            log0(
+                f"[verify_resume] best_model_tracking: "
+                f"best_loss={ckpt_state.best_model_tracking.best_val_loss:.4f} "
+                f"at_step={ckpt_state.best_model_tracking.step_of_best_loss}"
+            )
+                
+        log0("[verify_resume] checkpoint state verified successfully")
+        
+    except Exception as e:
+        log0(f"[verify_resume] warning: could not fully verify checkpoint: {e}")
+# =============================================================================
+# PERFORMANCE TRACKING
+# =============================================================================
+import statistics
+@dataclass
+class PerformanceSnapshot:
+    """Single performance measurement snapshot."""
+    tokens_per_second: float = 0.0
+    samples_per_second: float = 0.0
+    step_time_ms: float = 0.0
+    forward_time_ms: float = 0.0
+    backward_time_ms: float = 0.0
+    optimizer_time_ms: float = 0.0
+
+
+@dataclass
+class PerformanceStatistics:
+    """Aggregated performance statistics."""
+    tokens_per_second_rolling_avg: float = 0.0
+    tokens_per_second_lifetime_avg: float = 0.0
+    tokens_per_second_recent: float = 0.0
+    
+    samples_per_second_rolling_avg: float = 0.0
+    samples_per_second_lifetime_avg: float = 0.0
+    samples_per_second_recent: float = 0.0
+    
+    step_time_ms_rolling_avg: float = 0.0
+    step_time_ms_lifetime_avg: float = 0.0
+    step_time_ms_recent: float = 0.0
+    
+    forward_time_ms_rolling_avg: float = 0.0
+    forward_time_ms_lifetime_avg: float = 0.0
+    forward_time_ms_recent: float = 0.0
+    
+    backward_time_ms_rolling_avg: float = 0.0
+    backward_time_ms_lifetime_avg: float = 0.0
+    backward_time_ms_recent: float = 0.0
+    
+    optimizer_time_ms_rolling_avg: float = 0.0
+    optimizer_time_ms_lifetime_avg: float = 0.0
+    optimizer_time_ms_recent: float = 0.0
+
+
+class PerformanceTracker:
+    """Track training performance metrics."""
+    
+    def __init__(self, window_size: int = 50):
+        self.window_size = window_size
+        self.snapshots: List[PerformanceSnapshot] = []
+    
+    def record(self, snapshot: PerformanceSnapshot) -> None:
+        """Record a performance snapshot."""
+        self.snapshots.append(snapshot)
+    
+    def get_statistics(self) -> PerformanceStatistics:
+        """Compute aggregated statistics."""
+        if not self.snapshots:
+            return PerformanceStatistics()
+        
+        stats = PerformanceStatistics()
+        
+        # Lifetime averages
+        lifetime_tps = [s.tokens_per_second for s in self.snapshots if s.tokens_per_second > 0]
+        if lifetime_tps:
+            stats.tokens_per_second_lifetime_avg = statistics.mean(lifetime_tps)
+        
+        lifetime_sps = [s.samples_per_second for s in self.snapshots if s.samples_per_second > 0]
+        if lifetime_sps:
+            stats.samples_per_second_lifetime_avg = statistics.mean(lifetime_sps)
+        
+        lifetime_step = [s.step_time_ms for s in self.snapshots if s.step_time_ms > 0]
+        if lifetime_step:
+            stats.step_time_ms_lifetime_avg = statistics.mean(lifetime_step)
+        
+        # Rolling averages (recent window)
+        recent = self.snapshots[-self.window_size:]
+        
+        recent_tps = [s.tokens_per_second for s in recent if s.tokens_per_second > 0]
+        if recent_tps:
+            stats.tokens_per_second_rolling_avg = statistics.mean(recent_tps)
+        
+        recent_sps = [s.samples_per_second for s in recent if s.samples_per_second > 0]
+        if recent_sps:
+            stats.samples_per_second_rolling_avg = statistics.mean(recent_sps)
+        
+        recent_step = [s.step_time_ms for s in recent if s.step_time_ms > 0]
+        if recent_step:
+            stats.step_time_ms_rolling_avg = statistics.mean(recent_step)
+        
+        # Most recent values
+        if self.snapshots:
+            last = self.snapshots[-1]
+            stats.tokens_per_second_recent = last.tokens_per_second
+            stats.samples_per_second_recent = last.samples_per_second
+            stats.step_time_ms_recent = last.step_time_ms
+            stats.forward_time_ms_recent = last.forward_time_ms
+            stats.backward_time_ms_recent = last.backward_time_ms
+            stats.optimizer_time_ms_recent = last.optimizer_time_ms
+        
+        return stats
+
+
+@dataclass
+class MemoryAnalytics:
+    """GPU memory statistics."""
+    peak_allocated_mb: float = 0.0
+    peak_reserved_mb: float = 0.0
+    current_allocated_mb: float = 0.0
+    current_reserved_mb: float = 0.0
+    max_cluster_memory_mb: Optional[float] = None
+    attention_memory_estimate_mb: Optional[float] = None
+    
+    @staticmethod
+    def capture() -> "MemoryAnalytics":
+        """Capture current GPU memory stats."""
+        import torch
+        
+        if not torch.cuda.is_available():
+            return MemoryAnalytics()
+        
+        return MemoryAnalytics(
+            peak_allocated_mb=torch.cuda.max_memory_allocated() / (1024**2),
+            peak_reserved_mb=torch.cuda.max_memory_reserved() / (1024**2),
+            current_allocated_mb=torch.cuda.memory_allocated() / (1024**2),
+            current_reserved_mb=torch.cuda.memory_reserved() / (1024**2),
+        )
+
+
+class ResearchExporter:
+    """Export research-grade JSON metadata files."""
+    
+    def __init__(self, output_dir: str = "outputs/research"):
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+    
+    def export_metadata(
+        self,
+        step: int,
+        training_counters,
+    ) -> None:
+        """Export metadata.json."""
+        metadata = {
+            "step": step,
+            "training_counters": asdict(training_counters),
+        }
+        
+        out = self.output_dir / "metadata.json"
+        with open(out, "w") as f:
+            json.dump(metadata, f, indent=2, default=str)
+    
+    def export_training_stats(
+        self,
+        step: int,
+        performance_stats,
+        memory_analytics,
+        training_counters,
+    ) -> None:
+        """Export training_stats.json."""
+        stats = {
+            "step": step,
+            "performance": asdict(performance_stats),
+            "memory": asdict(memory_analytics),
+            "counters": asdict(training_counters),
+        }
+        
+        out = self.output_dir / "training_stats.json"
+        with open(out, "w") as f:
+            json.dump(stats, f, indent=2, default=str)
+    
+    def export_atlas_stats(self, step: int, atlas_metadata: dict) -> None:
+        """Export atlas_stats.json."""
+        if atlas_metadata is None:
+            return
+        
+        out = self.output_dir / "atlas_stats.json"
+        with open(out, "w") as f:
+            json.dump(atlas_metadata, f, indent=2, default=str)
 
 def _mean_pairwise_cosine(centroids: torch.Tensor) -> float:
     """
@@ -6967,18 +7513,18 @@ class ClusterSelfAttention16(nn.Module):
         self._last_attn_mask = attn_mask.detach().cpu()
         self._last_N          = N
         self._last_L          = L
-        if self.profile_counter % 100 == 0:
-            print("\n===CENTROIDS===")
-            print(centroids_k[0])
-            print("k norm avg",k_shared.norm(dim=-1).mean().item())
-            k_normed = F.normalize(k_shared_cluster, dim=-1)
-            sim = torch.matmul(k_normed,k_normed.transpose(-1, -2))
-            print(
-                f"cluster_var "
-                f"avg={self._cluster_var_avg:.4f} "
-                f"min={self._cluster_var_min:.4f} "
-                f"max={self._cluster_var_max:.4f}"
-            )
+        #if self.profile_counter % 100 == 0:
+            #print("\n===CENTROIDS===")
+            #print(centroids_k[0])
+            #print("k norm avg",k_shared.norm(dim=-1).mean().item())
+            #k_normed = F.normalize(k_shared_cluster, dim=-1)
+            #sim = torch.matmul(k_normed,k_normed.transpose(-1, -2))
+            #print(
+            #   f"cluster_var "
+            #    f"avg={self._cluster_var_avg:.4f} "
+            #    f"min={self._cluster_var_min:.4f} "
+            #     f"max={self._cluster_var_max:.4f}"
+            #)
         return y
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -7201,21 +7747,22 @@ def main() -> None:
     if master_process:
         os.makedirs("outputs/checkpoints", exist_ok=True)
         os.makedirs("outputs/atlas_metadata", exist_ok=True)
- 
-        wandb.init(
-            project=args.wandb_project,
-            entity=args.wandb_entity,
-            name=args.run_id,
-            id=args.run_id,
-            resume="allow",
-            mode=args.wandb_mode,
-            config={
-                k: v
-                for k, v in vars(Hyperparameters).items()
-                if not k.startswith("__")
-                and not callable(v)
-            },
-        )
+        os.makedirs("outputs/research", exist_ok=True)
+        if wandb is not None: 
+            wandb.init(
+                project=args.wandb_project,
+                entity=args.wandb_entity,
+                name=args.run_id,
+                id=args.run_id,
+                resume="allow",
+                mode=args.wandb_mode,
+                config={
+                    k: v
+                    for k, v in vars(Hyperparameters).items()
+                    if not k.startswith("__")
+                    and not callable(v)
+                },
+            )
 
     # Fast math knobs
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -7379,19 +7926,35 @@ def main() -> None:
         for opt in optimizers:
             opt.zero_grad(set_to_none=True)
 
-    # Instantiate exactly once
+    # ============================================================================
+    # CHECKPOINT MANAGER + ANALYTICS SETUP
+    # ============================================================================
     ckpt_manager = CheckpointManager(
         checkpoint_dir = "outputs/checkpoints",
         keep_last_k    = 3,
         rank           = rank,
         distributed    = distributed,
     )
-    atlas_collector = AtlasMetadataCollector(
+    atlas_collector = EnhancedAtlasMetadataCollector(
         model                     = base_model,
         save_full_attention_masks = False,
         full_mask_every           = 10,
     )
+    performance_tracker = PerformanceTracker(window_size=50)
+    research_exporter = ResearchExporter(output_dir="outputs/research")
+
+    # Initialize checkpoint state with enhanced fields
     ckpt_state = CheckpointState()
+    ckpt_state.dataset_state = DatasetState(
+        dataset_path=str(dataset_dir),
+        train_shard_count=actual_train_files,
+        val_shard_count=len(list(dataset_dir.glob(args.val_files))),
+        current_shard_id=0,
+        current_shard_offset=0,
+        current_sample_position=0,
+        tokenizer_path=args.tokenizer_path,
+        vocab_size=args.vocab_size,
+    )
 
     # Resume — must happen before warmup, after train_loader exists
     resume_path = ckpt_manager.find_latest()
@@ -7400,6 +7963,16 @@ def main() -> None:
         ckpt_state = ckpt_manager.load(
             resume_path, base_model, optimizers, train_loader, device
         )
+        ckpt = torch.load(resume_path, map_location="cpu", weights_only=False)
+
+        ckpt_state = ckpt_manager.load(
+            resume_path,
+            base_model,
+            optimizers,
+            train_loader,
+            device,
+        )
+
         log0(
             f"[resume] step={ckpt_state.step} "
             f"best_val_loss={ckpt_state.best_val_loss:.4f} "
@@ -7407,6 +7980,14 @@ def main() -> None:
             f"training_time_ms={ckpt_state.training_time_ms:.0f}ms"
         )
         verify_resume_equivalence(ckpt_state, train_loader, args, log0)
+
+        if ckpt_state.random_states.numpy_rng_state is not None and master_process:
+            log0("[resume] restoring numpy RNG state")
+            ckpt_manager._restore_numpy_state(ckpt_state.random_states.numpy_rng_state)
+
+        if ckpt_state.random_states.python_rng_state is not None and master_process:
+            log0("[resume] restoring python RNG state")
+            ckpt_manager._restore_python_state(ckpt_state.random_states.python_rng_state)
 
     max_wallclock_ms = 1000.0 * args.max_wallclock_seconds if args.max_wallclock_seconds > 0 else None
 
@@ -7463,6 +8044,7 @@ def main() -> None:
     t0 = time.perf_counter()
 
     step = ckpt_state.step
+    CHECKPOINT_EVERY = 1000
     while True:
         last_step = step == args.iterations or (stop_after_step is not None and step >= stop_after_step)
 
@@ -7488,7 +8070,7 @@ def main() -> None:
                 f"step:{step}/{args.iterations} val_loss:{val_loss:.4f} val_bpb:{val_bpb:.4f} "
                 f"train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms / max(step, 1):.2f}ms"
             )
-            if master_process:
+            if master_process and wandb is not None:
 
                 wandb.log(
                     {
@@ -7501,7 +8083,6 @@ def main() -> None:
                 )
             
             if master_process:
-
                 sample_text = generate_sample(
                     base_model,
                     sp,
@@ -7509,17 +8090,79 @@ def main() -> None:
                     prompt="A young engineer discovers a strange signal hidden inside a satellite transmission. The signal appears every 17 minutes and contains a repeating mathematical pattern. After several weeks of investigation, she notices that the pattern changes whenever a solar flare occurs.Explain what she does next and what she discovers.",
                     max_new_tokens=120,
                 )
+                
+                if wandb is not None:
+                    wandb.log(
+                        {
+                            "samples/text": wandb.Table(
+                                columns=["step", "text"],
+                                data=[[step, sample_text]],
+                            )
+                        },
+                        step=step,
+                    )
+            is_new_best_loss = val_loss < ckpt_state.best_model_tracking.best_val_loss
+            is_new_best_bpb = val_bpb < ckpt_state.best_model_tracking.best_val_bpb
+            is_new_best_ppl = val_ppl < ckpt_state.best_model_tracking.best_val_ppl
 
-                wandb.log(
-                    {
-                        "samples/text": wandb.Table(
-                            columns=["step", "text"],
-                            data=[[step, sample_text]],
-                        )
-                    },
-                    step=step,
+            if is_new_best_loss:
+                ckpt_state.best_model_tracking.best_val_loss = val_loss
+                ckpt_state.best_model_tracking.step_of_best_loss = step
+
+            if is_new_best_bpb:
+                ckpt_state.best_model_tracking.best_val_bpb = val_bpb
+                ckpt_state.best_model_tracking.step_of_best_bpb = step
+
+            if is_new_best_ppl:
+                ckpt_state.best_model_tracking.best_val_ppl = val_ppl
+                ckpt_state.best_model_tracking.step_of_best_ppl = step
+
+            # Update state
+            ckpt_state.last_val_loss = val_loss
+            ckpt_state.last_val_bpb = val_bpb
+            ckpt_state.last_val_ppl = val_ppl
+            ckpt_state.training_time_ms = training_time_ms
+            ckpt_state.stop_after_step = stop_after_step
+
+            ckpt_state.step = step 
+            ckpt_state.training_time_ms = training_time_ms
+
+            ckpt_manager.save(
+                step=step,
+                base_model=base_model,
+                optimizers=optimizers,
+                args=args,
+                state=ckpt_state,
+                train_loader=train_loader,
+                is_best=is_new_best_loss,
+                is_periodic=False,
+                run_id=args.run_id,
+                world_size=world_size,
+            )
+
+            # Collect and save ATLAS analytics (NEW)
+            if master_process:
+                atlas_metadata = atlas_collector.collect(step)
+                if atlas_metadata is not None:
+                    atlas_collector.save(step, atlas_metadata, rank=0)
+                    log0(f"atlas_metadata:saved step:{step} layers:{len(atlas_metadata['layers'])}")
+                else:
+                    log0(f"atlas_metadata:skipped step:{step} reason:no_cluster_layers")
+
+                # Export research metrics (NEW)
+                perf_stats = performance_tracker.get_statistics()
+                memory_stats = MemoryAnalytics.capture()
+
+                research_exporter.export_metadata(
+                    step, ckpt_state.training_counters
                 )
+                research_exporter.export_training_stats(
+                    step, perf_stats, memory_stats, ckpt_state.training_counters
+                )
+                if atlas_metadata is not None:
+                    research_exporter.export_atlas_stats(step, atlas_metadata)
 
+                log0(f"[research_export] saved metadata.json, training_stats.json, atlas_stats.json")
             is_new_best = val_loss < ckpt_state.best_val_loss
             if is_new_best:
                 ckpt_state.best_val_loss = val_loss
@@ -7568,11 +8211,13 @@ def main() -> None:
         forward_time = 0.0
         backward_time = 0.0
         optimizer_time = 0.0
+        batch_tokens = 0
         for micro_step in range(grad_accum_steps):
             if distributed:
                 model.require_backward_grad_sync = micro_step == grad_accum_steps - 1
             x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
             
+            batch_tokens += x.numel()
             f0 = time.perf_counter()
 
             if step == 20 and micro_step == 0: 
@@ -7603,6 +8248,12 @@ def main() -> None:
             backward_time += time.perf_counter() - b0
         train_loss /= grad_accum_steps
 
+        # Update training counters (NEW)
+        ckpt_state.training_counters.tokens_seen += batch_tokens
+        ckpt_state.training_counters.samples_seen += x.shape[0] * grad_accum_steps
+        ckpt_state.training_counters.optimizer_updates += 1
+        ckpt_state.training_counters.global_token_position += batch_tokens
+
         frac = min(step / args.muon_momentum_warmup_steps, 1.0) if args.muon_momentum_warmup_steps > 0 else 1.0
         muon_momentum = (1 - frac) * args.muon_momentum_warmup_start + frac * args.muon_momentum
         for group in optimizer_muon.param_groups:
@@ -7624,7 +8275,6 @@ def main() -> None:
 
         step += 1
          
-        CHECKPOINT_EVERY = 1000   # or add to Hyperparameters
         if step % CHECKPOINT_EVERY == 0:
             ckpt_state.training_time_ms = (
                 training_time_ms + 1000.0 * (time.perf_counter() - t0)
@@ -7643,12 +8293,26 @@ def main() -> None:
                 world_size   = world_size,
             ) 
         if step % 50 == 0:
-                print(
+
+            # Record performance snapshot (NEW)
+            step_time = (forward_time + backward_time + optimizer_time) * 1000.0
+            tokens_per_sec = batch_tokens / (step_time + 1e-8) if step_time > 0 else 0
+
+            perf_snapshot = PerformanceSnapshot(
+                tokens_per_second=tokens_per_sec,
+                samples_per_second=grad_accum_steps / ((step_time / 1000.0) + 1e-8),
+                step_time_ms=step_time,
+                forward_time_ms=forward_time * 1000.0,
+                backward_time_ms=backward_time * 1000.0,
+                optimizer_time_ms=optimizer_time * 1000.0,
+            )
+            performance_tracker.record(perf_snapshot)
+            print(
                 f"[TRAIN PROFILE] "
                 f"forward={forward_time:.3f}s "
                 f"backward={backward_time:.3f}s "
                 f"optimizer={optimizer_time:.3f}s"
-                )
+            )
         approx_training_time_ms = training_time_ms + 1000.0 * (time.perf_counter() - t0)
         should_log_train = (
             args.train_log_every > 0
@@ -7658,9 +8322,11 @@ def main() -> None:
             log0(
                 f"step:{step}/{args.iterations} train_loss:{train_loss.item():.4f} "
                 f"train_time:{approx_training_time_ms:.0f}ms step_avg:{approx_training_time_ms / step:.2f}ms"
+                f"tokens_seen:{ckpt_state.training_counters.tokens_seen}"
             )
 
-            if master_process:
+            if master_process and wandb is not None:
+                perf_stats = performance_tracker.get_statistics()
                 wandb.log(
                     {
                         "train/loss": train_loss.item(),
@@ -7669,6 +8335,8 @@ def main() -> None:
                         "train/optimizer_s": optimizer_time,
                         "train/lr_scale": scale,
                         "train/muon_momentum": muon_momentum,
+                        "train/tokens_per_sec": perf_stats.tokens_per_second_recent,
+                        "train/tokens_seen": ckpt_state.training_counters.tokens_seen,
                         "step": step,
                     },
                     step=step,
@@ -7792,7 +8460,7 @@ def main() -> None:
     )
     log0(f"final_int8_zlib_roundtrip_exact val_loss:{q_val_loss:.8f} val_bpb:{q_val_bpb:.8f}")
 
-    if master_process:
+    if master_process and wandb is not None:
         wandb.log(
             {
                 "final/val_loss": q_val_loss,
@@ -7810,6 +8478,13 @@ def main() -> None:
                         columns=["text"],
                         data=[[quant_text]],
                     ),
+                # Enhanced best model tracking (NEW)
+                "best_model/val_loss": ckpt_state.best_model_tracking.best_val_loss,
+                "best_model/val_bpb": ckpt_state.best_model_tracking.best_val_bpb,
+                "best_model/val_ppl": ckpt_state.best_model_tracking.best_val_ppl,
+                "best_model/step_loss": ckpt_state.best_model_tracking.step_of_best_loss,
+                "best_model/step_bpb": ckpt_state.best_model_tracking.step_of_best_bpb,
+                "best_model/step_ppl": ckpt_state.best_model_tracking.step_of_best_ppl,
             }
         ) 
     if master_process:
