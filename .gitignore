@@ -12,3 +12,4 @@ logs/
 pyrightconfig.json
 wandb/
 final_model.pt
+final_model.int8.ptz
