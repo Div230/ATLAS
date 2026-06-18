@@ -11,5 +11,7 @@ data/docs_selected.jsonl
 logs/
 pyrightconfig.json
 wandb/
-final_model.pt
+atlas-29M-1B-final/
 final_model.int8.ptz
+final_model.pt 
+
