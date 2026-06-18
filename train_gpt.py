@@ -1011,10 +1011,10 @@ class Hyperparameters:
     train_log_every = int(os.environ.get("TRAIN_LOG_EVERY", 200))
 
     # Training length.
-    iterations = int(os.environ.get("ITERATIONS", 8719))#20000 by default
+    iterations = int(os.environ.get("ITERATIONS", 30518))#20000 by default
     warmdown_iters = int(os.environ.get("WARMDOWN_ITERS", 1200))
     warmup_steps = int(os.environ.get("WARMUP_STEPS", 20))
-    train_batch_tokens = int(os.environ.get("TRAIN_BATCH_TOKENS", 114688))#524_288 by default
+    train_batch_tokens = int(os.environ.get("TRAIN_BATCH_TOKENS", 32768))#524_288 by default
     train_seq_len = int(os.environ.get("TRAIN_SEQ_LEN", 1024))
     max_wallclock_seconds = float(os.environ.get("MAX_WALLCLOCK_SECONDS", 600000001.0))
     qk_gain_init = float(os.environ.get("QK_GAIN_INIT", 1.5))
