@@ -10,7 +10,7 @@ ATLAS investigates a simple idea:
 
 
 The project evolved through several implementations and experimental variants. The repository contains the architecture, training code, experimental GPU kernels, validation code, and research artifacts. The large model checkpoints are hosted separately on Hugging Face.
-
+The final run was implemented using the train_gpt.py and the tags are provided for both the 29M and 100M run. The class named ClusterSelfAttention16 is the final versiom used in the runs but throughout from 1-15 are experimental version being optimized overtime.
 
 ---
 
