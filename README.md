@@ -43,17 +43,6 @@ ATLAS explores a hierarchical alternative.
 
 Rather than treating every token as an equally granular attention target, the sequence is divided into clusters. A query can then obtain information through two levels:
 
-Query
-                       │
-              ┌────────┴────────┐
-              │                 │
-        Local tokens      Cluster representations
-              │                 │
-              │           ┌─────┴─────┐
-              │           │           │
-           fine-grained   K centroid  V centroid
-           information
-
 The goal is to preserve detailed local information while providing a more compact representation of broader context.
 
 This is an experimental architecture: the project investigates the trade-off between the computational savings of clustering and the information lost when multiple tokens are represented collectively.
@@ -70,12 +59,6 @@ For a cluster C_i containing L_i tokens, the implementation constructs a represe
 Conceptually:
 
 Cluster C_i
-
-x₁ ─┐
-x₂ ─┤
-x₃ ─┼──► cluster representation
-x₄ ─┤
-x₅ ─┘
 
 The cluster representation provides a more compact way of accessing information from multiple tokens.
 
@@ -94,19 +77,6 @@ The query can also interact with cluster-level representations.
 This provides access to broader information without requiring the query to directly evaluate every token represented by those clusters.
 
 The intended trade-off is:
-
-Dense attention
-    │
-    └── every token interacts directly
-            ↓
-          O(T²)
-
-ATLAS
-    │
-    ├── local token interactions
-    │
-    └── cluster-level interactions
-            ↓
        reduced interaction space
 
 The exact efficiency depends on the clustering strategy, cluster sizes, visibility rules, and implementation overhead.
@@ -118,17 +88,9 @@ The exact efficiency depends on the clustering strategy, cluster sizes, visibili
 
 A central component of ATLAS is the construction of cluster-level key/value representations.
 
-Conceptually, for a cluster containing several token representations:
+Conceptually, for a cluster containing several token representations
 
-K₁ K₂ K₃ ... Kₙ
- │  │  │      │
- └──┴──┴──────┴──► K_cluster
-
-V₁ V₂ V₃ ... Vₙ
- │  │  │      │
- └──┴──┴──────┴──► V_cluster
-
-The experimental implementations construct these representations from the K/V states associated with the cluster.
+The experimental implementations construct these representations from the Q/K states associated with the cluster.
 
 The resulting representation can then participate in attention alongside the local token representations.
 
