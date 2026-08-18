@@ -16,3 +16,4 @@ atlas-100M-1B-final/
 final_model.int8.ptz
 final_model.pt 
 
+hf-atlas/
