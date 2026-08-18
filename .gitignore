@@ -11,7 +11,9 @@ data/docs_selected.jsonl
 logs/
 pyrightconfig.json
 wandb/
-atlas-29M-1B-final/
 final_model.int8.ptz
 final_model.pt 
-
+atlas-29M-1B-final/outputs/atlas/checkpoints/
+atlas-29M-1B-final/outputs/dense/checkpoints/
+atlas-29M-1B-final/outputs/atlas/atlas_metadata/*.pt
+atlas-100M-1B-final/

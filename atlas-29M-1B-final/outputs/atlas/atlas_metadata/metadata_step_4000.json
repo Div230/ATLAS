@@ -1,0 +1,564 @@
+{
+  "step": 4000,
+  "layers": {
+    "blocks.0.attn": {
+      "layer_name": "blocks.0.attn",
+      "routing": {
+        "routing_similarity_mean": 0.0,
+        "routing_similarity_std": 0.0,
+        "routing_similarity_min": 0.0,
+        "routing_similarity_max": 0.0,
+        "cluster_reuse_rate": 0.9835390946502057,
+        "new_cluster_creation_rate": 0.01646090534979424,
+        "cluster_assignment_entropy": 5.493059158325195
+      },
+      "cluster_distribution": {
+        "cluster_size_histogram": [
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          3.0
+        ],
+        "cluster_count_histogram": [
+          4
+        ],
+        "median_cluster_size": 64.0,
+        "p90_cluster_size": 64.0,
+        "p95_cluster_size": 64.0,
+        "p99_cluster_size": 64.0
+      },
+      "attention_composition": {
+        "local_attention_fraction": 0.9510603547096252,
+        "centroid_attention_fraction": 0.04893964156508446,
+        "average_local_keys": 29.60546875,
+        "average_external_centroids": 1.5234375,
+        "local_attention_mass": 7579.0,
+        "centroid_attention_mass": 390.0
+      },
+      "centroid_quality": {
+        "centroid_norm_mean": 3.883385181427002,
+        "centroid_norm_std": 0.14420746266841888,
+        "centroid_pairwise_similarity_mean": 0.20960171520709991,
+        "centroid_pairwise_similarity_std": 0.2753547728061676,
+        "intra_cluster_variance_mean": 7.005401611328125,
+        "intra_cluster_variance_std": 0.9493478536605835,
+        "intra_cluster_variance_max": 10.90437126159668,
+        "cluster_compactness_score": 0.12491565677166525,
+        "token_centroid_similarity_mean": 0.82634037733078,
+        "token_centroid_similarity_std": 0.09487514197826385,
+        "token_centroid_similarity_min": 0.19942252337932587,
+        "nearest_centroid_similarity_mean": 0.6741588711738586,
+        "nearest_centroid_similarity_std": 0.03935312479734421,
+        "nearest_centroid_similarity_max": 0.8125582933425903
+      }
+    },
+    "blocks.1.attn": {
+      "layer_name": "blocks.1.attn",
+      "routing": {
+        "routing_similarity_mean": 0.0,
+        "routing_similarity_std": 0.0,
+        "routing_similarity_min": 0.0,
+        "routing_similarity_max": 0.0,
+        "cluster_reuse_rate": 0.9835390946502057,
+        "new_cluster_creation_rate": 0.01646090534979424,
+        "cluster_assignment_entropy": 5.493059158325195
+      },
+      "cluster_distribution": {
+        "cluster_size_histogram": [
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          3.0
+        ],
+        "cluster_count_histogram": [
+          4
+        ],
+        "median_cluster_size": 64.0,
+        "p90_cluster_size": 64.0,
+        "p95_cluster_size": 64.0,
+        "p99_cluster_size": 64.0
+      },
+      "attention_composition": {
+        "local_attention_fraction": 0.9465467929840088,
+        "centroid_attention_fraction": 0.053453229367733,
+        "average_local_keys": 29.60546875,
+        "average_external_centroids": 1.671875,
+        "local_attention_mass": 7579.0,
+        "centroid_attention_mass": 428.0
+      },
+      "centroid_quality": {
+        "centroid_norm_mean": 2.7114627361297607,
+        "centroid_norm_std": 0.6516239643096924,
+        "centroid_pairwise_similarity_mean": 0.17655687034130096,
+        "centroid_pairwise_similarity_std": 0.2995465099811554,
+        "intra_cluster_variance_mean": 9.812379837036133,
+        "intra_cluster_variance_std": 1.3532037734985352,
+        "intra_cluster_variance_max": 12.614891052246094,
+        "cluster_compactness_score": 0.09248657696751042,
+        "token_centroid_similarity_mean": 0.6401654481887817,
+        "token_centroid_similarity_std": 0.1594972163438797,
+        "token_centroid_similarity_min": -0.06038741022348404,
+        "nearest_centroid_similarity_mean": 0.6945127248764038,
+        "nearest_centroid_similarity_std": 0.10415103286504745,
+        "nearest_centroid_similarity_max": 0.8977495431900024
+      }
+    },
+    "blocks.2.attn": {
+      "layer_name": "blocks.2.attn",
+      "routing": {
+        "routing_similarity_mean": 0.0,
+        "routing_similarity_std": 0.0,
+        "routing_similarity_min": 0.0,
+        "routing_similarity_max": 0.0,
+        "cluster_reuse_rate": 0.9835390946502057,
+        "new_cluster_creation_rate": 0.01646090534979424,
+        "cluster_assignment_entropy": 5.493059158325195
+      },
+      "cluster_distribution": {
+        "cluster_size_histogram": [
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          3.0
+        ],
+        "cluster_count_histogram": [
+          4
+        ],
+        "median_cluster_size": 64.0,
+        "p90_cluster_size": 64.0,
+        "p95_cluster_size": 64.0,
+        "p99_cluster_size": 64.0
+      },
+      "attention_composition": {
+        "local_attention_fraction": 0.9357945322990417,
+        "centroid_attention_fraction": 0.06420546025037766,
+        "average_local_keys": 29.60546875,
+        "average_external_centroids": 2.03125,
+        "local_attention_mass": 7579.0,
+        "centroid_attention_mass": 520.0
+      },
+      "centroid_quality": {
+        "centroid_norm_mean": 3.887826919555664,
+        "centroid_norm_std": 0.3724866509437561,
+        "centroid_pairwise_similarity_mean": 0.13803628087043762,
+        "centroid_pairwise_similarity_std": 0.3570477068424225,
+        "intra_cluster_variance_mean": 13.214570999145508,
+        "intra_cluster_variance_std": 2.5262503623962402,
+        "intra_cluster_variance_max": 20.16683006286621,
+        "cluster_compactness_score": 0.07035034684199148,
+        "token_centroid_similarity_mean": 0.7305543422698975,
+        "token_centroid_similarity_std": 0.1140609011054039,
+        "token_centroid_similarity_min": -0.1584937572479248,
+        "nearest_centroid_similarity_mean": 0.8133493065834045,
+        "nearest_centroid_similarity_std": 0.06255124509334564,
+        "nearest_centroid_similarity_max": 0.9462447762489319
+      }
+    },
+    "blocks.3.attn": {
+      "layer_name": "blocks.3.attn",
+      "routing": {
+        "routing_similarity_mean": 0.0,
+        "routing_similarity_std": 0.0,
+        "routing_similarity_min": 0.0,
+        "routing_similarity_max": 0.0,
+        "cluster_reuse_rate": 0.9835390946502057,
+        "new_cluster_creation_rate": 0.01646090534979424,
+        "cluster_assignment_entropy": 5.493059158325195
+      },
+      "cluster_distribution": {
+        "cluster_size_histogram": [
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          3.0
+        ],
+        "cluster_count_histogram": [
+          4
+        ],
+        "median_cluster_size": 64.0,
+        "p90_cluster_size": 64.0,
+        "p95_cluster_size": 64.0,
+        "p99_cluster_size": 64.0
+      },
+      "attention_composition": {
+        "local_attention_fraction": 0.9524946808815002,
+        "centroid_attention_fraction": 0.04750534147024155,
+        "average_local_keys": 29.60546875,
+        "average_external_centroids": 1.4765625,
+        "local_attention_mass": 7579.0,
+        "centroid_attention_mass": 378.0
+      },
+      "centroid_quality": {
+        "centroid_norm_mean": 4.77284574508667,
+        "centroid_norm_std": 0.25780707597732544,
+        "centroid_pairwise_similarity_mean": 0.25599828362464905,
+        "centroid_pairwise_similarity_std": 0.2612946629524231,
+        "intra_cluster_variance_mean": 12.1133451461792,
+        "intra_cluster_variance_std": 2.7043209075927734,
+        "intra_cluster_variance_max": 21.40392303466797,
+        "cluster_compactness_score": 0.0762581926161966,
+        "token_centroid_similarity_mean": 0.8084056377410889,
+        "token_centroid_similarity_std": 0.09544825553894043,
+        "token_centroid_similarity_min": 0.08861970901489258,
+        "nearest_centroid_similarity_mean": 0.8041377663612366,
+        "nearest_centroid_similarity_std": 0.05903561785817146,
+        "nearest_centroid_similarity_max": 0.9351125359535217
+      }
+    },
+    "blocks.4.attn": {
+      "layer_name": "blocks.4.attn",
+      "routing": {
+        "routing_similarity_mean": 0.0,
+        "routing_similarity_std": 0.0,
+        "routing_similarity_min": 0.0,
+        "routing_similarity_max": 0.0,
+        "cluster_reuse_rate": 0.9835390946502057,
+        "new_cluster_creation_rate": 0.01646090534979424,
+        "cluster_assignment_entropy": 5.493059158325195
+      },
+      "cluster_distribution": {
+        "cluster_size_histogram": [
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          3.0
+        ],
+        "cluster_count_histogram": [
+          4
+        ],
+        "median_cluster_size": 64.0,
+        "p90_cluster_size": 64.0,
+        "p95_cluster_size": 64.0,
+        "p99_cluster_size": 64.0
+      },
+      "attention_composition": {
+        "local_attention_fraction": 0.9485607147216797,
+        "centroid_attention_fraction": 0.051439300179481506,
+        "average_local_keys": 29.60546875,
+        "average_external_centroids": 1.60546875,
+        "local_attention_mass": 7579.0,
+        "centroid_attention_mass": 411.0
+      },
+      "centroid_quality": {
+        "centroid_norm_mean": 4.726670265197754,
+        "centroid_norm_std": 0.3343302011489868,
+        "centroid_pairwise_similarity_mean": 0.21271023154258728,
+        "centroid_pairwise_similarity_std": 0.25950300693511963,
+        "intra_cluster_variance_mean": 10.6631498336792,
+        "intra_cluster_variance_std": 2.660785436630249,
+        "intra_cluster_variance_max": 21.040180206298828,
+        "cluster_compactness_score": 0.08574013146194359,
+        "token_centroid_similarity_mean": 0.82254958152771,
+        "token_centroid_similarity_std": 0.10251880437135696,
+        "token_centroid_similarity_min": 0.005220092833042145,
+        "nearest_centroid_similarity_mean": 0.7791597247123718,
+        "nearest_centroid_similarity_std": 0.05018889158964157,
+        "nearest_centroid_similarity_max": 0.9153125286102295
+      }
+    },
+    "blocks.5.attn": {
+      "layer_name": "blocks.5.attn",
+      "routing": {
+        "routing_similarity_mean": 0.0,
+        "routing_similarity_std": 0.0,
+        "routing_similarity_min": 0.0,
+        "routing_similarity_max": 0.0,
+        "cluster_reuse_rate": 0.9835390946502057,
+        "new_cluster_creation_rate": 0.01646090534979424,
+        "cluster_assignment_entropy": 5.493059158325195
+      },
+      "cluster_distribution": {
+        "cluster_size_histogram": [
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          3.0
+        ],
+        "cluster_count_histogram": [
+          4
+        ],
+        "median_cluster_size": 64.0,
+        "p90_cluster_size": 64.0,
+        "p95_cluster_size": 64.0,
+        "p99_cluster_size": 64.0
+      },
+      "attention_composition": {
+        "local_attention_fraction": 0.9526143670082092,
+        "centroid_attention_fraction": 0.047385621815919876,
+        "average_local_keys": 29.60546875,
+        "average_external_centroids": 1.47265625,
+        "local_attention_mass": 7579.0,
+        "centroid_attention_mass": 377.0
+      },
+      "centroid_quality": {
+        "centroid_norm_mean": 5.488047122955322,
+        "centroid_norm_std": 0.18234196305274963,
+        "centroid_pairwise_similarity_mean": 0.22806106507778168,
+        "centroid_pairwise_similarity_std": 0.30629801750183105,
+        "intra_cluster_variance_mean": 11.989469528198242,
+        "intra_cluster_variance_std": 1.9588476419448853,
+        "intra_cluster_variance_max": 18.714820861816406,
+        "cluster_compactness_score": 0.07698543792178318,
+        "token_centroid_similarity_mean": 0.8458718657493591,
+        "token_centroid_similarity_std": 0.06748826056718826,
+        "token_centroid_similarity_min": 0.223272442817688,
+        "nearest_centroid_similarity_mean": 0.8226122856140137,
+        "nearest_centroid_similarity_std": 0.04581316560506821,
+        "nearest_centroid_similarity_max": 0.9285182952880859
+      }
+    },
+    "blocks.6.attn": {
+      "layer_name": "blocks.6.attn",
+      "routing": {
+        "routing_similarity_mean": 0.0,
+        "routing_similarity_std": 0.0,
+        "routing_similarity_min": 0.0,
+        "routing_similarity_max": 0.0,
+        "cluster_reuse_rate": 0.9835390946502057,
+        "new_cluster_creation_rate": 0.01646090534979424,
+        "cluster_assignment_entropy": 5.493059158325195
+      },
+      "cluster_distribution": {
+        "cluster_size_histogram": [
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          3.0
+        ],
+        "cluster_count_histogram": [
+          4
+        ],
+        "median_cluster_size": 64.0,
+        "p90_cluster_size": 64.0,
+        "p95_cluster_size": 64.0,
+        "p99_cluster_size": 64.0
+      },
+      "attention_composition": {
+        "local_attention_fraction": 0.9538132548332214,
+        "centroid_attention_fraction": 0.04618676006793976,
+        "average_local_keys": 29.60546875,
+        "average_external_centroids": 1.43359375,
+        "local_attention_mass": 7579.0,
+        "centroid_attention_mass": 367.0
+      },
+      "centroid_quality": {
+        "centroid_norm_mean": 5.938148498535156,
+        "centroid_norm_std": 0.14734423160552979,
+        "centroid_pairwise_similarity_mean": 0.1485401690006256,
+        "centroid_pairwise_similarity_std": 0.3467428982257843,
+        "intra_cluster_variance_mean": 9.371956825256348,
+        "intra_cluster_variance_std": 1.3562915325164795,
+        "intra_cluster_variance_max": 14.35533332824707,
+        "cluster_compactness_score": 0.09641382208272782,
+        "token_centroid_similarity_mean": 0.888710618019104,
+        "token_centroid_similarity_std": 0.053411878645420074,
+        "token_centroid_similarity_min": 0.5217094421386719,
+        "nearest_centroid_similarity_mean": 0.8036494255065918,
+        "nearest_centroid_similarity_std": 0.03155418857932091,
+        "nearest_centroid_similarity_max": 0.9411380887031555
+      }
+    },
+    "blocks.7.attn": {
+      "layer_name": "blocks.7.attn",
+      "routing": {
+        "routing_similarity_mean": 0.0,
+        "routing_similarity_std": 0.0,
+        "routing_similarity_min": 0.0,
+        "routing_similarity_max": 0.0,
+        "cluster_reuse_rate": 0.9835390946502057,
+        "new_cluster_creation_rate": 0.01646090534979424,
+        "cluster_assignment_entropy": 5.493059158325195
+      },
+      "cluster_distribution": {
+        "cluster_size_histogram": [
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          3.0
+        ],
+        "cluster_count_histogram": [
+          4
+        ],
+        "median_cluster_size": 64.0,
+        "p90_cluster_size": 64.0,
+        "p95_cluster_size": 64.0,
+        "p99_cluster_size": 64.0
+      },
+      "attention_composition": {
+        "local_attention_fraction": 0.947611927986145,
+        "centroid_attention_fraction": 0.05238809809088707,
+        "average_local_keys": 29.60546875,
+        "average_external_centroids": 1.63671875,
+        "local_attention_mass": 7579.0,
+        "centroid_attention_mass": 419.0
+      },
+      "centroid_quality": {
+        "centroid_norm_mean": 5.383423805236816,
+        "centroid_norm_std": 0.22986279428005219,
+        "centroid_pairwise_similarity_mean": 0.533569872379303,
+        "centroid_pairwise_similarity_std": 0.18316560983657837,
+        "intra_cluster_variance_mean": 11.503328323364258,
+        "intra_cluster_variance_std": 2.657076835632324,
+        "intra_cluster_variance_max": 19.275466918945312,
+        "cluster_compactness_score": 0.07997870440075999,
+        "token_centroid_similarity_mean": 0.8459104299545288,
+        "token_centroid_similarity_std": 0.07979454100131989,
+        "token_centroid_similarity_min": 0.33088427782058716,
+        "nearest_centroid_similarity_mean": 0.8900604248046875,
+        "nearest_centroid_similarity_std": 0.037911854684352875,
+        "nearest_centroid_similarity_max": 0.9704118371009827
+      }
+    },
+    "blocks.8.attn": {
+      "layer_name": "blocks.8.attn",
+      "routing": {
+        "routing_similarity_mean": 0.0,
+        "routing_similarity_std": 0.0,
+        "routing_similarity_min": 0.0,
+        "routing_similarity_max": 0.0,
+        "cluster_reuse_rate": 0.9835390946502057,
+        "new_cluster_creation_rate": 0.01646090534979424,
+        "cluster_assignment_entropy": 5.493059158325195
+      },
+      "cluster_distribution": {
+        "cluster_size_histogram": [
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          3.0
+        ],
+        "cluster_count_histogram": [
+          4
+        ],
+        "median_cluster_size": 64.0,
+        "p90_cluster_size": 64.0,
+        "p95_cluster_size": 64.0,
+        "p99_cluster_size": 64.0
+      },
+      "attention_composition": {
+        "local_attention_fraction": 0.93360435962677,
+        "centroid_attention_fraction": 0.06639566272497177,
+        "average_local_keys": 29.60546875,
+        "average_external_centroids": 2.10546875,
+        "local_attention_mass": 7579.0,
+        "centroid_attention_mass": 539.0
+      },
+      "centroid_quality": {
+        "centroid_norm_mean": 5.285808086395264,
+        "centroid_norm_std": 0.2872391939163208,
+        "centroid_pairwise_similarity_mean": 0.6390171647071838,
+        "centroid_pairwise_similarity_std": 0.17770838737487793,
+        "intra_cluster_variance_mean": 15.559347152709961,
+        "intra_cluster_variance_std": 3.0759694576263428,
+        "intra_cluster_variance_max": 26.178361892700195,
+        "cluster_compactness_score": 0.0603888541485374,
+        "token_centroid_similarity_mean": 0.8016401529312134,
+        "token_centroid_similarity_std": 0.08933840692043304,
+        "token_centroid_similarity_min": 0.2497308850288391,
+        "nearest_centroid_similarity_mean": 0.9213241338729858,
+        "nearest_centroid_similarity_std": 0.038059163838624954,
+        "nearest_centroid_similarity_max": 0.9679093956947327
+      }
+    }
+  },
+  "global": {
+    "total_layers": 9,
+    "routing": {
+      "routing_similarity_mean": 0.0,
+      "routing_similarity_std": 0.0,
+      "routing_similarity_min": 0.0,
+      "routing_similarity_max": 0.0,
+      "cluster_reuse_rate": 0.9835390946502057,
+      "new_cluster_creation_rate": 0.01646090534979424,
+      "cluster_assignment_entropy": 5.493059158325195
+    },
+    "cluster_distribution": {
+      "cluster_size_histogram": [],
+      "cluster_count_histogram": [],
+      "median_cluster_size": 0.0,
+      "p90_cluster_size": 0.0,
+      "p95_cluster_size": 0.0,
+      "p99_cluster_size": 0.0
+    },
+    "attention_composition": {
+      "local_attention_fraction": 0.0,
+      "centroid_attention_fraction": 0.0,
+      "average_local_keys": 0.0,
+      "average_external_centroids": 0.0,
+      "local_attention_mass": 0.0,
+      "centroid_attention_mass": 0.0
+    },
+    "centroid_quality": {
+      "centroid_norm_mean": 0.0,
+      "centroid_norm_std": 0.0,
+      "centroid_pairwise_similarity_mean": 0.0,
+      "centroid_pairwise_similarity_std": 0.0,
+      "intra_cluster_variance_mean": 0.0,
+      "intra_cluster_variance_std": 0.0,
+      "intra_cluster_variance_max": 0.0,
+      "cluster_compactness_score": 0.0,
+      "token_centroid_similarity_mean": 0.0,
+      "token_centroid_similarity_std": 0.0,
+      "token_centroid_similarity_min": 0.0,
+      "nearest_centroid_similarity_mean": 0.0,
+      "nearest_centroid_similarity_std": 0.0,
+      "nearest_centroid_similarity_max": 0.0
+    }
+  },
+  "masks_included": false,
+  "timestamp": 1781742395.3299737
+}
