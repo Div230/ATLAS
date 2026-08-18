@@ -1,0 +1,10 @@
+{
+  "step": 24415,
+  "training_counters": {
+    "tokens_seen": 1000038400,
+    "samples_seen": 976600,
+    "optimizer_updates": 24415,
+    "gradient_accumulation_steps": 1,
+    "global_token_position": 1000038400
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "step": 24415,
+  "performance": {
+    "tokens_per_second_rolling_avg": 10.54591114806897,
+    "tokens_per_second_lifetime_avg": 10.615093081781392,
+    "tokens_per_second_recent": 10.55953399337879,
+    "samples_per_second_rolling_avg": 2.059748265807295,
+    "samples_per_second_lifetime_avg": 2.0732603621670003,
+    "samples_per_second_recent": 2.0624089777701986,
+    "step_time_ms_rolling_avg": 3885.5428784299875,
+    "step_time_ms_lifetime_avg": 3859.245200376895,
+    "step_time_ms_recent": 3878.9590549713466,
+    "forward_time_ms_rolling_avg": 0.0,
+    "forward_time_ms_lifetime_avg": 0.0,
+    "forward_time_ms_recent": 1901.077891991008,
+    "backward_time_ms_rolling_avg": 0.0,
+    "backward_time_ms_lifetime_avg": 0.0,
+    "backward_time_ms_recent": 1824.8628029832616,
+    "optimizer_time_ms_rolling_avg": 0.0,
+    "optimizer_time_ms_lifetime_avg": 0.0,
+    "optimizer_time_ms_recent": 153.0183599970769
+  },
+  "memory": {
+    "peak_allocated_mb": 5154.97119140625,
+    "peak_reserved_mb": 5626.0,
+    "current_allocated_mb": 799.14599609375,
+    "current_reserved_mb": 5626.0,
+    "max_cluster_memory_mb": null,
+    "attention_memory_estimate_mb": null
+  },
+  "counters": {
+    "tokens_seen": 1000038400,
+    "samples_seen": 976600,
+    "optimizer_updates": 24415,
+    "gradient_accumulation_steps": 1,
+    "global_token_position": 1000038400
+  }
+}

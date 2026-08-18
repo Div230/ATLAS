@@ -26,7 +26,7 @@ import sentencepiece as spm
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
-from torch import Tensor, nn, t
+from torch import Tensor, nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from atlas_triton_2 import ProductionAtlasEngine
